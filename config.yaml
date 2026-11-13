@@ -1,0 +1,8 @@
+http:
+    listen: 0.0.0.0:20000
+    session_hours: 12
+    secure_cookie: false
+database: maintenance.db
+timezone: Asia/Shanghai
+pushplus_token: ""
+reminder_scan_interval: 1h0m0s
