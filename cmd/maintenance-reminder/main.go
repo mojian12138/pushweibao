@@ -24,6 +24,7 @@ import (
 	"maintenance-reminder/internal/httpapi"
 	"maintenance-reminder/internal/push"
 	"maintenance-reminder/internal/scheduler"
+	"maintenance-reminder/internal/systemlog"
 )
 
 func main() {
@@ -143,7 +144,7 @@ func serve(cfg config.Config, database *sql.DB, listener net.Listener) {
 	defer listener.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	jobs := &scheduler.Scheduler{DB: database, Config: cfg, Push: push.NewClient()}
+	jobs := &scheduler.Scheduler{DB: database, Config: cfg, Push: push.NewClient(), Log: &systemlog.Logger{DB: database}}
 	go jobs.Run(ctx)
 	server := &http.Server{Handler: httpapi.New(database, cfg.Database, cfg).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {

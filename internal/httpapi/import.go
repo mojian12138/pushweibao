@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 	"github.com/xuri/excelize/v2"
 	"maintenance-reminder/internal/importexport"
 	"maintenance-reminder/internal/push"
+	"maintenance-reminder/internal/systemlog"
 )
 
 func uploadedFile(r *http.Request) (multipart.File, error) {
@@ -228,30 +230,116 @@ func (s *Server) importProjectDevices(w http.ResponseWriter, r *http.Request) {
 	ok(w, result)
 }
 
+// testPushBody carries the text of a test push. The preview that the user
+// confirmed is sent as it is, so that what they saw is what arrives.
+type testPushBody struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// Format is the way the message is written: html, txt or markdown. It
+	// decides the PushPlus template the message is sent with.
+	Format string `json:"format"`
+}
+
+// sendTestPush sends a message with the token of the current account and
+// records the attempt in the log.
+func (s *Server) sendTestPush(ctx context.Context, token push.Token, title, content string, actor string, format string) (string, error) {
+	defaults := s.pushDefaults(ctx)
+	out := push.Message{
+		Token:   token.Token,
+		Title:   title,
+		Content: content,
+		// The format of the message wins over the template of the token, so
+		// that a message written in markdown is not sent as html.
+		Template:    firstNonEmpty(format, token.Template, defaults["template"], "html"),
+		Channel:     firstNonEmpty(token.Channel, defaults["channel"], "wechat"),
+		Option:      token.Option,
+		CallbackURL: firstNonEmpty(token.CallbackURL, defaults["callback_url"]),
+	}
+	if out.Token == "" {
+		out.Token = s.cfg.PushPlusToken
+	}
+	if token.Kind == push.KindGroup {
+		out.Topic = token.TopicCode
+	}
+	res, err := push.NewClientWithTimeout(timeoutSeconds(defaults["timeout_seconds"])).Send(ctx, out)
+	if err != nil {
+		s.log().Record(systemlog.Entry{
+			Level:    systemlog.LevelError,
+			Category: systemlog.CategoryPush,
+			Action:   "test_push",
+			Message:  "测试推送失败：" + err.Error(),
+			Detail:   title + "｜" + content,
+			Actor:    actor,
+			IP:       clientIP(ctx),
+		})
+		return "", err
+	}
+	s.log().Record(systemlog.Entry{
+		Level:    systemlog.LevelInfo,
+		Category: systemlog.CategoryPush,
+		Action:   "test_push",
+		Message:  "测试推送已发送：" + title,
+		Detail:   content,
+		Actor:    actor,
+		RefType:  "push_token",
+		RefID:    token.ID,
+		IP:       clientIP(ctx),
+	})
+	return res.MsgID, nil
+}
+
+// clientIP reads the address of the caller from the request context.
+func clientIP(ctx context.Context) string {
+	if v, ok := ctx.Value(remoteAddrKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 func (s *Server) testDevicePush(w http.ResponseWriter, r *http.Request) {
 	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if e != nil {
 		fail(w, 400, "BAD_REQUEST", "编号无效")
 		return
 	}
+	var body testPushBody
+	// The body is optional: without it the built-in test message is used.
+	_ = decode(r, &body)
 	var p, c, v, m, sn, end, owner string
-	e = s.db.QueryRow(`SELECT p.name,p.customer,d.vendor,d.model,d.serial_number,d.maintenance_end,d.owner FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, id).Scan(&p, &c, &v, &m, &sn, &end, &owner)
+	e = s.db.QueryRow(`SELECT p.name,p.customer,d.vendor,d.model,d.serial_number,d.maintenance_end,COALESCE(NULLIF(d.owner,''),p.owner) FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, id).Scan(&p, &c, &v, &m, &sn, &end, &owner)
 	if e != nil {
 		fail(w, 404, "NOT_FOUND", "设备不存在")
 		return
 	}
-	var token string
-	_ = s.db.QueryRow(`SELECT COALESCE(pushplus_token,'') FROM users WHERE id=?`, currentUser(r).ID).Scan(&token)
-	if token == "" {
-		token = s.cfg.PushPlusToken
+	store := push.NewStore(s.db)
+	token, e2 := store.ForUser(currentUser(r).Username)
+	if e2 != nil || !token.Enabled {
+		token = push.Token{}
 	}
-	client := push.NewClient()
-	msg := fmt.Sprintf("测试推送｜项目：%s｜客户：%s｜设备：%s %s｜SN：%s｜到期：%s｜负责人：%s", p, c, v, m, sn, end, owner)
-	if e = client.Send(r.Context(), token, "维保提醒测试", msg); e != nil {
+	if token.ID == 0 {
+		// The account has no token of its own, so the fallback token is
+		// used, the same way the strategy test does.
+		if t, e3 := store.Default(); e3 == nil {
+			token = t
+		}
+	}
+	// The text the user confirmed wins over the built-in one.
+	title := firstNonEmpty(body.Title, "维保提醒测试")
+	content := firstNonEmpty(body.Content, fmt.Sprintf("测试推送｜项目：%s｜客户：%s｜设备：%s %s｜SN：%s｜到期：%s｜负责人：%s", p, c, v, m, sn, end, owner))
+
+	// The message must already be rendered. The dialog renders it through
+	// the preview before it sends it, so a marker that is still here means
+	// the message was not rendered and would reach the phone as "{{project}}".
+	if keys := unresolvedMarkers(title, content); len(keys) > 0 {
+		fail(w, 400, "VALIDATION", "消息中还留有未替换的占位符："+strings.Join(keys, "、"))
+		return
+	}
+	msgID, e := s.sendTestPush(r.Context(), token, title, content, currentUser(r).Username, body.Format)
+	if e != nil {
 		fail(w, 502, "PUSH_FAILED", e.Error())
 		return
 	}
-	ok(w, map[string]bool{"sent": true})
+	ok(w, map[string]any{"sent": true, "msg_id": msgID})
 }
 func (s *Server) testStrategyPush(w http.ResponseWriter, r *http.Request) {
 	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -259,21 +347,126 @@ func (s *Server) testStrategyPush(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "BAD_REQUEST", "编号无效")
 		return
 	}
+	var body testPushBody
+	_ = decode(r, &body)
 	var name, msg, recipients string
-	e = s.db.QueryRow(`SELECT name,template,recipients FROM strategies WHERE id=?`, id).Scan(&name, &msg, &recipients)
+	var tokenID int64
+	var format string
+	e = s.db.QueryRow(`SELECT name,template,recipients,COALESCE(token_id,0),format FROM strategies WHERE id=?`, id).Scan(&name, &msg, &recipients, &tokenID, &format)
 	if e != nil {
 		fail(w, 404, "NOT_FOUND", "策略不存在")
 		return
 	}
 	targets := []string{}
 	_ = json.Unmarshal([]byte(recipients), &targets)
-	token := s.cfg.PushPlusToken
+	store := push.NewStore(s.db)
+	token := push.Token{}
 	if len(targets) > 0 {
-		_ = s.db.QueryRow(`SELECT COALESCE(pushplus_token,'') FROM users WHERE username=?`, targets[0]).Scan(&token)
+		if t, e2 := store.ForUser(targets[0]); e2 == nil && t.Enabled {
+			token = t
+		}
 	}
-	if e = push.NewClient().Send(r.Context(), token, "策略测试："+name, msg); e != nil {
+	if token.ID == 0 && tokenID > 0 {
+		if t, e2 := store.Get(tokenID); e2 == nil && t.Enabled {
+			token = t
+		}
+	}
+	if token.ID == 0 {
+		if t, e2 := store.Default(); e2 == nil {
+			token = t
+		}
+	}
+	title := firstNonEmpty(body.Title, "策略测试："+name)
+	content := firstNonEmpty(body.Content, msg)
+
+	// The message must already be rendered. The dialog renders it through
+	// the preview before it sends it, so a marker that is still here means
+	// the message was not rendered and would reach the phone as "{{project}}".
+	if keys := unresolvedMarkers(title, content); len(keys) > 0 {
+		fail(w, 400, "VALIDATION", "消息中还留有未替换的占位符："+strings.Join(keys, "、"))
+		return
+	}
+	msgID, e := s.sendTestPush(r.Context(), token, title, content, currentUser(r).Username, firstNonEmpty(body.Format, format))
+	if e != nil {
 		fail(w, 502, "PUSH_FAILED", e.Error())
 		return
 	}
-	ok(w, map[string]bool{"sent": true})
+	s.log().Record(systemlog.Entry{
+		Level:    systemlog.LevelInfo,
+		Category: systemlog.CategoryStrategy,
+		Action:   "strategy_test_push",
+		Message:  "策略测试推送已发送：" + name,
+		Detail:   content,
+		Actor:    currentUser(r).Username,
+		RefType:  "strategy",
+		RefID:    id,
+		IP:       clientIP(r.Context()),
+	})
+	ok(w, map[string]any{"sent": true, "msg_id": msgID})
+}
+
+// testDraftStrategyPush sends the message of a strategy that is being
+// edited, before it is saved. The text is the one the user confirmed in the
+// editor, so that the test shows what the saved strategy would send.
+func (s *Server) testDraftStrategyPush(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+		Name       string `json:"name"`
+		TokenID    int64  `json:"token_id"`
+		Recipients string `json:"recipients"`
+		// Format is the way the message is written: html, txt or markdown.
+		Format string `json:"format"`
+	}
+	if decode(r, &body) != nil {
+		fail(w, 400, "BAD_REQUEST", "请求格式错误")
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" {
+		fail(w, 400, "VALIDATION", "消息内容不能为空")
+		return
+	}
+	store := push.NewStore(s.db)
+	token := push.Token{}
+	targets := []string{}
+	_ = json.Unmarshal([]byte(body.Recipients), &targets)
+	if len(targets) > 0 {
+		if t, e := store.ForUser(targets[0]); e == nil && t.Enabled {
+			token = t
+		}
+	}
+	if token.ID == 0 && body.TokenID > 0 {
+		if t, e := store.Get(body.TokenID); e == nil && t.Enabled {
+			token = t
+		}
+	}
+	if token.ID == 0 {
+		if t, e := store.Default(); e == nil {
+			token = t
+		}
+	}
+	title := firstNonEmpty(body.Title, "策略测试")
+
+	// The message must already be rendered. The editor renders it through
+	// the preview before it sends it, so a marker that is still here means
+	// the message was not rendered and would reach the phone as "{{project}}".
+	if keys := unresolvedMarkers(title, body.Content); len(keys) > 0 {
+		fail(w, 400, "VALIDATION", "消息中还留有未替换的占位符："+strings.Join(keys, "、"))
+		return
+	}
+	msgID, e := s.sendTestPush(r.Context(), token, title, body.Content, currentUser(r).Username, body.Format)
+	if e != nil {
+		fail(w, 502, "PUSH_FAILED", e.Error())
+		return
+	}
+	s.log().Record(systemlog.Entry{
+		Level:    systemlog.LevelInfo,
+		Category: systemlog.CategoryStrategy,
+		Action:   "strategy_draft_test_push",
+		Message:  "策略草稿测试推送已发送：" + firstNonEmpty(body.Name, "未命名策略"),
+		Detail:   title + "｜" + body.Content,
+		Actor:    currentUser(r).Username,
+		IP:       clientIP(r.Context()),
+	})
+	ok(w, map[string]any{"sent": true, "msg_id": msgID})
 }

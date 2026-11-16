@@ -29,7 +29,44 @@ func Open(path string) (*sql.DB, error) {
 		database.Close()
 		return nil, err
 	}
+	if err := backfillPushTokens(database); err != nil {
+		database.Close()
+		return nil, err
+	}
+	// A strategy that still carries the plain text of the first release is
+	// moved to the styled preset, so that a program started on an existing
+	// database sends styled messages without an edit of every strategy.
+	if err := upgradeLegacyStrategies(database); err != nil {
+		database.Close()
+		return nil, err
+	}
 	return database, nil
+}
+
+// backfillPushTokens copies legacy PushPlus tokens into the push_tokens table
+// and binds them to the accounts that used them. It runs on every start and is
+// idempotent, so tokens configured by an older build are picked up as well.
+func backfillPushTokens(database *sql.DB) error {
+	statements := []string{
+		// The legacy global token becomes a normal token, unless a token with
+		// the same value already exists.
+		`INSERT INTO push_tokens(name,kind,token_value,channel,template,enabled,note)
+		 SELECT '默认令牌','user',value,'wechat','html',1,'由旧版全局 PushPlus Token 自动迁移'
+		 FROM settings WHERE key='pushplus_token' AND value<>''
+		 AND NOT EXISTS (SELECT 1 FROM push_tokens WHERE token_value=(SELECT value FROM settings WHERE key='pushplus_token'))`,
+		`INSERT INTO push_tokens(name,kind,token_value,channel,template,enabled,note)
+		 SELECT u.username||' 的令牌','user',u.pushplus_token,'wechat','html',1,'由旧版账号 Token 自动迁移'
+		 FROM users u WHERE u.pushplus_token<>''
+		 AND NOT EXISTS (SELECT 1 FROM push_tokens WHERE token_value=u.pushplus_token)`,
+		`UPDATE users SET push_token_id=(SELECT t.id FROM push_tokens t WHERE t.token_value=users.pushplus_token AND t.kind='user')
+		 WHERE pushplus_token<>'' AND push_token_id IS NULL`,
+	}
+	for _, statement := range statements {
+		if _, err := database.Exec(statement); err != nil {
+			return fmt.Errorf("backfill push tokens: %w", err)
+		}
+	}
+	return nil
 }
 
 func migrate(database *sql.DB) error {

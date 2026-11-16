@@ -1,1 +1,122 @@
-*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:#1c2930;font:14px/1.5 system-ui,-apple-system,"PingFang SC",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer;border:1px solid #187d78;background:#187d78;color:#fff;border-radius:4px;padding:8px 12px}button.secondary{background:#fff;color:#31464b;border-color:#cbd5d9}button.danger{background:#ae3d46;border-color:#ae3d46}input,select,textarea{padding:9px;border:1px solid #c8d2d6;border-radius:4px;background:#fff;color:inherit}label{display:grid;gap:5px;color:#506066}.shell{min-height:100vh;display:grid;grid-template-columns:220px 1fr}.sidebar{background:#173c3d;color:white;padding:22px 16px}.brand{font-size:18px;font-weight:700;margin:0 8px 24px}.nav{display:grid;gap:4px}.nav button{text-align:left;background:transparent;border-color:transparent;color:#d6e8e5}.nav button.active,.nav button:hover{background:#275554}.content{min-width:0}.topbar{height:62px;background:#fff;border-bottom:1px solid #dce3e5;display:flex;justify-content:flex-end;align-items:center;padding:0 24px;gap:12px}.page{padding:24px;max-width:1500px;margin:auto}.page h1{font-size:22px;margin:0 0 18px}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.toolbar input,.toolbar select{min-width:145px}.table-wrap{overflow:auto;background:#fff;border:1px solid #dce3e5;border-radius:5px}table{border-collapse:collapse;width:100%;min-width:760px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e8edef;white-space:nowrap}th{background:#f7f9fa;color:#506066;font-weight:600}tr:last-child td{border-bottom:0}.stats{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;margin-bottom:18px}.stat{background:#fff;border:1px solid #dce3e5;border-radius:5px;padding:14px;text-align:left;color:#1c2930}.stat strong{display:block;font-size:24px;margin-top:6px}.stat[data-filter]{border-left:4px solid #187d78}.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}.panel{background:#fff;border:1px solid #dce3e5;border-radius:5px;padding:16px}.panel h2{font-size:15px;margin:0 0 10px}.panel canvas{width:100%;height:220px}.empty,.error,.loading{padding:24px;text-align:center;color:#687980}.error{color:#ae3d46}.login{max-width:390px;margin:10vh auto;background:#fff;padding:28px;border:1px solid #dce3e5;border-radius:5px}.login h1{font-size:20px}.form{display:grid;gap:12px}.modal-backdrop{position:fixed;inset:0;background:#10232888;display:grid;place-items:center;padding:16px}.modal{background:#fff;border-radius:5px;width:min(620px,100%);max-height:90vh;overflow:auto;padding:20px}.modal h2{margin:0 0 15px;font-size:18px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.span-2{grid-column:1/-1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.badge{display:inline-block;border-radius:3px;padding:2px 7px;background:#e4f4ee;color:#18704c}.badge.warn{background:#fff2d9;color:#8a6200}.badge.bad{background:#fde6e6;color:#a4343d}.muted{color:#687980}.row-actions{display:flex;gap:6px}@media(max-width:800px){.shell{grid-template-columns:1fr}.sidebar{padding:12px}.brand{margin:0 8px 8px}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.topbar{height:52px}.page{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}.charts{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f8;color:#1c2930;font:14px/1.5 system-ui,-apple-system,"PingFang SC",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer;border:1px solid #187d78;background:#187d78;color:#fff;border-radius:4px;padding:8px 12px}button.secondary{background:#fff;color:#31464b;border-color:#cbd5d9}button.danger{background:#ae3d46;border-color:#ae3d46}input,select,textarea{padding:9px;border:1px solid #c8d2d6;border-radius:4px;background:#fff;color:inherit}label{display:grid;gap:5px;color:#506066}.shell{min-height:100vh;display:grid;grid-template-columns:220px 1fr}.sidebar{background:#173c3d;color:white;padding:22px 16px}.brand{font-size:18px;font-weight:700;margin:0 8px 24px}.nav{display:grid;gap:4px}.nav button{text-align:left;background:transparent;border-color:transparent;color:#d6e8e5}.nav button.active,.nav button:hover{background:#275554}.content{min-width:0}.topbar{height:62px;background:#fff;border-bottom:1px solid #dce3e5;display:flex;justify-content:flex-end;align-items:center;padding:0 24px;gap:12px}.page{padding:24px;max-width:1500px;margin:auto}.page h1{font-size:22px;margin:0 0 18px}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-end}
+.toolbar input,.toolbar select{min-width:145px}
+/* A toolbar holds inputs of different kinds, so they are given one height
+   instead of being stretched by the flex line. */
+.toolbar label{gap:4px}
+.toolbar .field{display:grid;gap:4px}
+.toolbar .field.grow{flex:1 1 240px}
+.toolbar .field.grow input{width:100%}
+.toolbar .field-actions{display:flex;gap:8px;align-items:center}
+.table-wrap{overflow:auto;background:#fff;border:1px solid #dce3e5;border-radius:5px}table{border-collapse:collapse;width:100%;min-width:760px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e8edef;white-space:nowrap}th{background:#f7f9fa;color:#506066;font-weight:600}tr:last-child td{border-bottom:0}
+/* The counts of the dashboard. Each card carries the colour of what it
+   counts, so a card can be told apart at a glance. */
+.stats{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:#fff;border:1px solid #dce3e5;border-radius:6px;padding:14px 16px;text-align:left;color:#1c2930;display:grid;gap:2px;transition:box-shadow .12s,border-color .12s,transform .12s}
+.stat:hover{border-color:#9fc4c1;box-shadow:0 2px 8px #173c3d14}
+.stat:active{transform:translateY(1px)}
+.stat .stat-label{font-size:13px;color:#506066}
+.stat strong{font-size:26px;line-height:1.2;font-weight:600}
+.stat .stat-hint{font-size:12px;color:#8a979d}
+.stat.expired{box-shadow:inset 3px 0 0 #ae5260}
+.stat.soon30{box-shadow:inset 3px 0 0 #d39837}
+.stat.soon90{box-shadow:inset 3px 0 0 #557d95}
+.stat.active{box-shadow:inset 3px 0 0 #197d77}
+.stat.on{background:#f2f8f7;border-color:#197d77}
+.stat.on strong{color:#197d77}
+.filter-panel{padding:12px 14px;margin-bottom:14px}
+.filter-panel .toolbar{margin-bottom:0}
+/* The table of the dashboard sits under a line that says what it holds. */
+.dash-result{background:#fff;border:1px solid #dce3e5;border-radius:6px;overflow:hidden}
+.result-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #e8edef;background:#f7f9fa;font-weight:600}
+.result-head .muted{font-weight:400}
+.dash-result .empty{margin:0}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+.chart{display:grid;place-items:center;min-height:220px}
+.donut{display:flex;align-items:center;gap:18px;width:100%}
+.donut svg{width:180px;height:180px;flex:0 0 180px}
+.donut-total{font-size:22px;font-weight:600;fill:#1c2930}
+.donut-cap{font-size:11px;fill:#687980}
+.legend{list-style:none;margin:0;padding:0;display:grid;gap:7px;min-width:0;flex:1}
+.legend li{display:flex;align-items:center;gap:8px;font-size:13px}
+.legend i{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
+.legend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend b{margin-left:auto;font-weight:600}
+.legend em{font-style:normal;color:#8a979d;font-size:12px;width:38px;text-align:right}
+.bars{width:100%;height:auto}
+.bars .grid{stroke:#e8edef;stroke-width:1}
+.bars .axis{font-size:10px;fill:#8a979d}
+.bars .value{font-size:11px;fill:#31464b;font-weight:600}
+.bars .bar{fill:#197d77}
+.panel{background:#fff;border:1px solid #dce3e5;border-radius:6px;padding:16px}.panel h2{font-size:15px;margin:0 0 12px}.empty,.error,.loading{padding:24px;text-align:center;color:#687980}.error{color:#ae3d46}.login{max-width:390px;margin:10vh auto;background:#fff;padding:28px;border:1px solid #dce3e5;border-radius:5px}.login h1{font-size:20px}.form{display:grid;gap:12px}.modal-backdrop{position:fixed;inset:0;background:#10232888;display:grid;place-items:center;padding:16px}.modal{background:#fff;border-radius:5px;width:min(620px,100%);max-height:90vh;overflow:auto;padding:20px}.modal h2{margin:0 0 15px;font-size:18px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.span-2{grid-column:1/-1}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.badge{display:inline-block;border-radius:3px;padding:2px 7px;background:#e4f4ee;color:#18704c}.badge.warn{background:#fff2d9;color:#8a6200}.badge.bad{background:#fde6e6;color:#a4343d}.badge.plain-badge{background:#eef2f4;color:#506066}
+.muted{color:#687980}
+/* The buttons of a row keep their own height. A flex line stretches its
+   items by default, which made every button as tall as the card. */
+.row-actions{display:flex;gap:6px;align-items:center;flex:0 0 auto}
+.row-actions button{padding:5px 10px;font-size:13px;line-height:1.6;white-space:nowrap}
+/* The strategy list: a card per strategy. */
+.strategy-list{display:grid;gap:12px}
+.strategy-card{padding:14px 16px}
+.strategy-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.strategy-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.strategy-title b{font-size:15px}
+.strategy-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 18px;margin:12px 0}
+.strategy-meta>div{display:grid;gap:2px;min-width:0}
+.strategy-meta dt{font-size:12px;color:#8a979d}
+.strategy-meta dd{margin:0;font-size:13px;color:#31464b;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:800px){.shell{grid-template-columns:1fr}.sidebar{padding:12px}.brand{margin:0 8px 8px}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.topbar{height:52px}.page{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}.charts{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.donut{flex-direction:column}.strategy-head{flex-direction:column}.toolbar .field.grow{flex:1 1 100%}}
+
+/* The template editor: settings on the left, the message and its preview on
+   the right. */
+.modal-wide{width:min(1080px,100%)}
+.editor{display:grid;grid-template-columns:1fr 340px;gap:18px;align-items:start}
+.editor-main{display:grid;gap:12px}
+.editor-main textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.6;resize:vertical}
+.editor-side{background:#f7f9fa;border:1px solid #dce3e5;border-radius:5px;padding:14px}
+.editor-side h3{font-size:14px;margin:0 0 4px}
+.editor-side h4{font-size:13px;margin:14px 0 6px;color:#31464b}
+.editor-side p{margin:0 0 8px;font-size:12px}
+.marker-list{display:flex;flex-wrap:wrap;gap:5px}
+.marker{display:inline-flex;align-items:center;gap:5px;background:#fff;color:#31464b;border:1px solid #cbd5d9;border-radius:3px;padding:4px 7px;font-size:12px}
+.marker:hover{background:#e4f4ee;border-color:#187d78}
+.marker code{background:#eef2f4;border-radius:2px;padding:1px 4px;font-size:11px;color:#506066}
+.editor-preview{margin-top:16px;border-top:1px solid #dce3e5;padding-top:12px}
+.preview-toolbar{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.preview-toolbar button{font-size:12px;padding:5px 8px}
+.preview-box{background:#fff;border:1px solid #dce3e5;border-radius:4px;padding:10px;font-size:13px;max-height:320px;overflow:auto}
+/* An html message brings its own frame, so the box steps back and lets the
+   card of the message be the only border. */
+.preview-box.plain{border:0;padding:6px;background:#f7f9fa}
+.preview-title{font-weight:600;margin-bottom:6px}
+.preview-label{font-size:12px;color:#687980;margin:8px 0 4px}
+.preview-content{margin:0;white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;line-height:1.6}
+/* The html preview is shown as html, so the user sees the layout the phone
+   will show. */
+.preview-html{white-space:normal}
+.preview-html p{margin:0 0 6px}
+.preview-html ul,.preview-html ol{margin:0 0 6px;padding-left:18px}
+.preview-html li{margin:2px 0}
+/* The tables of the pages are wide and never wrap; a table inside a message
+   is the opposite, so the page rules are undone here. */
+.preview-html table{border-collapse:collapse;min-width:0;width:auto;max-width:100%}
+.preview-html td,.preview-html th{border:1px solid #dce3e5;padding:3px 6px;white-space:normal}
+.preview-html h1,.preview-html h2,.preview-html h3{margin:0 0 8px;font-size:15px;color:#197d77}
+.preview-html h2{font-size:16px}
+.preview-html blockquote{margin:8px 0;padding:6px 10px;border-left:3px solid #197d77;background:#f5f8f8;color:#40545a}
+.preview-html code{background:#eef2f4;border-radius:3px;padding:1px 5px;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.preview-html hr{border:0;border-top:1px solid #dce3e5;margin:10px 0}
+.preview-html a{color:#197d77}
+/* The preview is narrow, so a wide message table may scroll on its own
+   instead of pushing the dialog wider. */
+.preview-html{overflow-x:auto}
+/* The format row and the preset row of the template editor. */
+.format-row{display:flex;align-items:center;gap:8px}
+.format-hint{margin:2px 0 8px;font-size:12px}
+.preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.preset-row select{flex:1;min-width:160px}
+.template-preview{background:#f7f9fa;border-left:3px solid #cbd5d9;padding:6px 10px;margin:8px 0 0;white-space:pre-wrap;word-break:break-word}
+/* The strategy list shows the message as it will look, so the box behaves
+   like the preview of the editor. */
+.strategy-preview{margin-top:2px;max-width:100%;white-space:normal}
+.strategy-preview table{min-width:0;width:auto}
+.strategy-preview th,.strategy-preview td{white-space:normal}
+@media(max-width:900px){.editor{grid-template-columns:1fr}}

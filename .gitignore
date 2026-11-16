@@ -1,6 +1,7 @@
 # 编译产物
 /maintenance-reminder
 /maintenance-reminder-*
+/dist/
 *.exe
 
 # 运行时数据（含账号哈希，不入库）

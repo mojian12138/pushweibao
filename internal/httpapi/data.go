@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"maintenance-reminder/internal/auth"
+	"maintenance-reminder/internal/push"
+	"maintenance-reminder/internal/template"
 )
 
 type Project struct {
@@ -22,6 +24,7 @@ type Project struct {
 	Contact     string `json:"contact"`
 	Notes       string `json:"notes"`
 	ContractNo  string `json:"contract_no"`
+	Owner       string `json:"owner"`
 	DeviceCount int    `json:"device_count,omitempty"`
 	NearestDue  string `json:"nearest_due,omitempty"`
 }
@@ -45,7 +48,7 @@ type Device struct {
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	rows, err := s.db.Query(`SELECT p.id,p.name,p.customer,p.contact,p.notes,p.contract_no,COUNT(d.id),COALESCE(MIN(CASE WHEN d.status='active' THEN d.maintenance_end END),'') FROM projects p LEFT JOIN devices d ON d.project_id=p.id WHERE (?='' OR p.name LIKE ? OR p.customer LIKE ? OR p.contact LIKE ?) GROUP BY p.id ORDER BY p.name`, q, "%"+q+"%", "%"+q+"%", "%"+q+"%")
+	rows, err := s.db.Query(`SELECT p.id,p.name,p.customer,p.contact,p.notes,p.contract_no,p.owner,COUNT(d.id),COALESCE(MIN(CASE WHEN d.status='active' THEN d.maintenance_end END),'') FROM projects p LEFT JOIN devices d ON d.project_id=p.id WHERE (?='' OR p.name LIKE ? OR p.customer LIKE ? OR p.contact LIKE ?) GROUP BY p.id ORDER BY p.name`, q, "%"+q+"%", "%"+q+"%", "%"+q+"%")
 	if err != nil {
 		errorResponse(w, err)
 		return
@@ -54,7 +57,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	out := []Project{}
 	for rows.Next() {
 		var p Project
-		if err = rows.Scan(&p.ID, &p.Name, &p.Customer, &p.Contact, &p.Notes, &p.ContractNo, &p.DeviceCount, &p.NearestDue); err != nil {
+		if err = rows.Scan(&p.ID, &p.Name, &p.Customer, &p.Contact, &p.Notes, &p.ContractNo, &p.Owner, &p.DeviceCount, &p.NearestDue); err != nil {
 			errorResponse(w, err)
 			return
 		}
@@ -68,7 +71,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "VALIDATION", "项目名必填")
 		return
 	}
-	res, err := s.db.Exec(`INSERT INTO projects(name,customer,contact,notes,contract_no) VALUES(?,?,?,?,?)`, strings.TrimSpace(p.Name), p.Customer, p.Contact, p.Notes, p.ContractNo)
+	res, err := s.db.Exec(`INSERT INTO projects(name,customer,contact,notes,contract_no,owner) VALUES(?,?,?,?,?,?)`, strings.TrimSpace(p.Name), p.Customer, p.Contact, p.Notes, p.ContractNo, p.Owner)
 	if err != nil {
 		errorResponse(w, err)
 		return
@@ -83,7 +86,7 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "VALIDATION", "项目数据无效")
 		return
 	}
-	res, err := s.db.Exec(`UPDATE projects SET name=?,customer=?,contact=?,notes=?,contract_no=? WHERE id=?`, p.Name, p.Customer, p.Contact, p.Notes, p.ContractNo, id)
+	res, err := s.db.Exec(`UPDATE projects SET name=?,customer=?,contact=?,notes=?,contract_no=?,owner=? WHERE id=?`, p.Name, p.Customer, p.Contact, p.Notes, p.ContractNo, p.Owner, id)
 	if err != nil {
 		errorResponse(w, err)
 		return
@@ -143,6 +146,27 @@ func (s *Server) createDevice(w http.ResponseWriter, r *http.Request) {
 	d.ID, _ = res.LastInsertId()
 	writeJSON(w, 201, envelope{OK: true, Data: d})
 }
+
+// getDevice returns one device with its project, so that the test push can
+// show the data of that device.
+func (s *Server) getDevice(w http.ResponseWriter, r *http.Request) {
+	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if e != nil {
+		fail(w, 400, "BAD_REQUEST", "编号无效")
+		return
+	}
+	var d Device
+	var projectID int64
+	e = s.db.QueryRow(`SELECT d.id,d.project_id,p.name,p.customer,d.vendor,d.model,d.serial_number,d.maintenance_start,d.maintenance_end,d.status,d.notes,d.owner,d.contract_no,d.strategy_override FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.id=?`, id).Scan(&d.ID, &projectID, &d.Project, &d.Customer, &d.Vendor, &d.Model, &d.Serial, &d.Start, &d.End, &d.Status, &d.Notes, &d.Owner, &d.ContractNo, &d.StrategyOverride)
+	if e != nil {
+		fail(w, 404, "NOT_FOUND", "设备不存在")
+		return
+	}
+	d.ProjectID = FlexID(projectID)
+	d.Remaining = s.daysUntil(d.End)
+	ok(w, d)
+}
+
 func (s *Server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var d Device
@@ -312,11 +336,42 @@ type Strategy struct {
 	CycleThreshold int      `json:"cycle_threshold"`
 	CycleInterval  int      `json:"cycle_interval"`
 	Template       string   `json:"template"`
+	TitleTemplate  string   `json:"title_template"`
+	ItemTemplate   string   `json:"item_template"`
 	Recipients     []string `json:"recipients"`
+	TokenID        int64    `json:"token_id"`
+	// Format is the way the message is written: html, txt or markdown. It
+	// also decides which PushPlus template the message is sent with.
+	Format string `json:"format"`
+	// Preview is the body rendered with the sample data, so that the list
+	// shows the layout of the message instead of its source.
+	Preview string `json:"preview"`
+}
+
+// strategySampleBody renders the body of a strategy with the sample data, so
+// that the list can show the message the way it will look instead of the
+// template source.
+func strategySampleBody(s *Server, x Strategy) string {
+	body := template.Sample(x.Type, x.Template)
+	if x.Type != template.KindMonthly {
+		return body
+	}
+	// The summary is built around the lines of the item template, so both
+	// have to be rendered for the table to be filled.
+	item := x.ItemTemplate
+	if strings.TrimSpace(item) == "" {
+		item = template.DefaultItemFor(x.Format)
+	}
+	line := template.SampleItem(item) + "\n"
+	return template.RenderSummary(x.Template, template.Summary{
+		Month: s.currentMonth(),
+		Count: 2,
+		Items: line + line,
+	})
 }
 
 func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.db.Query(`SELECT id,name,type,enabled,sort_order,offsets,monthly_day,horizon_days,cycle_threshold,cycle_interval,template,recipients FROM strategies ORDER BY sort_order,id`)
+	rows, e := s.db.Query(`SELECT id,name,type,enabled,sort_order,offsets,monthly_day,horizon_days,cycle_threshold,cycle_interval,template,title_template,item_template,recipients,COALESCE(token_id,0),format FROM strategies ORDER BY sort_order,id`)
 	if e != nil {
 		errorResponse(w, e)
 		return
@@ -327,13 +382,15 @@ func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
 		var x Strategy
 		var enabled int
 		var offsets, recipients string
-		if e = rows.Scan(&x.ID, &x.Name, &x.Type, &enabled, &x.Sort, &offsets, &x.MonthlyDay, &x.Horizon, &x.CycleThreshold, &x.CycleInterval, &x.Template, &recipients); e != nil {
+		if e = rows.Scan(&x.ID, &x.Name, &x.Type, &enabled, &x.Sort, &offsets, &x.MonthlyDay, &x.Horizon, &x.CycleThreshold, &x.CycleInterval, &x.Template, &x.TitleTemplate, &x.ItemTemplate, &recipients, &x.TokenID, &x.Format); e != nil {
 			errorResponse(w, e)
 			return
 		}
 		x.Enabled = enabled == 1
 		_ = json.Unmarshal([]byte(offsets), &x.Offsets)
 		_ = json.Unmarshal([]byte(recipients), &x.Recipients)
+		x.Format = template.NormalizeFormat(x.Format)
+		x.Preview = template.RenderAsHTML(x.Format, strategySampleBody(s, x))
 		out = append(out, x)
 	}
 	ok(w, out)
@@ -348,17 +405,52 @@ func (s *Server) saveStrategy(w http.ResponseWriter, r *http.Request, id int64, 
 		fail(w, 400, "VALIDATION", "策略类型无效")
 		return
 	}
+	// A template that uses a marker the type does not support is rejected
+	// here, so that a message that would go out half empty never reaches
+	// the queue.
+	if e := template.Validate(x.Type, x.Template, false); e != nil {
+		fail(w, 400, "VALIDATION", e.Error())
+		return
+	}
+	if e := template.ValidateTitle(x.TitleTemplate); e != nil {
+		fail(w, 400, "VALIDATION", e.Error())
+		return
+	}
+	if x.ItemTemplate != "" {
+		if e := template.ValidateItem(x.ItemTemplate); e != nil {
+			fail(w, 400, "VALIDATION", e.Error())
+			return
+		}
+	}
+	// The format decides how the message is written, so an unknown one is
+	// refused instead of being sent as plain text.
+	if !template.ValidFormat(x.Format) {
+		fail(w, 400, "VALIDATION", "消息格式无效，可选：html、txt、markdown")
+		return
+	}
+	x.Format = template.NormalizeFormat(x.Format)
+	// An empty message gets the ready-made template of the format, so that
+	// every format works out of the box.
+	if strings.TrimSpace(x.Template) == "" {
+		x.Template = template.DefaultBodyFor(x.Format, x.Type)
+	}
+	if strings.TrimSpace(x.TitleTemplate) == "" {
+		x.TitleTemplate = template.DefaultTitleFor(x.Format, x.Type)
+	}
+	if x.Type == "monthly" && strings.TrimSpace(x.ItemTemplate) == "" {
+		x.ItemTemplate = template.DefaultItemFor(x.Format)
+	}
 	off, _ := json.Marshal(x.Offsets)
 	rec, _ := json.Marshal(x.Recipients)
 	if create {
-		res, e := s.db.Exec(`INSERT INTO strategies(name,type,enabled,sort_order,offsets,monthly_day,horizon_days,cycle_threshold,cycle_interval,template,recipients) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, x.Name, x.Type, boolInt(x.Enabled), x.Sort, string(off), x.MonthlyDay, x.Horizon, x.CycleThreshold, x.CycleInterval, x.Template, string(rec))
+		res, e := s.db.Exec(`INSERT INTO strategies(name,type,enabled,sort_order,offsets,monthly_day,horizon_days,cycle_threshold,cycle_interval,template,title_template,item_template,recipients,token_id,format) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.Name, x.Type, boolInt(x.Enabled), x.Sort, string(off), x.MonthlyDay, x.Horizon, x.CycleThreshold, x.CycleInterval, x.Template, x.TitleTemplate, x.ItemTemplate, string(rec), nullInt(x.TokenID), x.Format)
 		if e != nil {
 			errorResponse(w, e)
 			return
 		}
 		x.ID, _ = res.LastInsertId()
 	} else {
-		res, e := s.db.Exec(`UPDATE strategies SET name=?,type=?,enabled=?,sort_order=?,offsets=?,monthly_day=?,horizon_days=?,cycle_threshold=?,cycle_interval=?,template=?,recipients=? WHERE id=?`, x.Name, x.Type, boolInt(x.Enabled), x.Sort, string(off), x.MonthlyDay, x.Horizon, x.CycleThreshold, x.CycleInterval, x.Template, string(rec), id)
+		res, e := s.db.Exec(`UPDATE strategies SET name=?,type=?,enabled=?,sort_order=?,offsets=?,monthly_day=?,horizon_days=?,cycle_threshold=?,cycle_interval=?,template=?,title_template=?,item_template=?,recipients=?,token_id=?,format=? WHERE id=?`, x.Name, x.Type, boolInt(x.Enabled), x.Sort, string(off), x.MonthlyDay, x.Horizon, x.CycleThreshold, x.CycleInterval, x.Template, x.TitleTemplate, x.ItemTemplate, string(rec), nullInt(x.TokenID), x.Format, id)
 		if e != nil {
 			errorResponse(w, e)
 			return
@@ -378,6 +470,14 @@ func boolInt(v bool) int {
 	}
 	return 0
 }
+
+// nullInt maps a zero id to NULL so the foreign key stays optional.
+func nullInt(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
 func (s *Server) createStrategy(w http.ResponseWriter, r *http.Request) {
 	s.saveStrategy(w, r, 0, true)
 }
@@ -393,13 +493,13 @@ func (s *Server) deleteStrategy(w http.ResponseWriter, r *http.Request) {
 	deleteByID(w, r, s.db, "strategies", "策略")
 }
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.db.Query(`SELECT id,project_name,strategy_name,trigger_point,channel,recipient,message,status,last_error,created_at,sent_at FROM notification_outbox ORDER BY id DESC LIMIT 500`)
+	rows, e := s.db.Query(`SELECT id,project_name,strategy_name,trigger_point,channel,recipient,message,status,last_error,created_at,sent_at,token_name,channel_detail,msg_id FROM notification_outbox ORDER BY id DESC LIMIT 500`)
 	if e != nil {
 		errorResponse(w, e)
 		return
 	}
 	defer rows.Close()
-	cols := []string{"id", "project", "strategy", "trigger", "channel", "recipient", "message", "status", "error", "created_at", "sent_at"}
+	cols := []string{"id", "project", "strategy", "trigger", "channel", "recipient", "message", "status", "error", "created_at", "sent_at", "token_name", "channel_detail", "msg_id"}
 	out := []map[string]any{}
 	for rows.Next() {
 		vals := make([]any, len(cols))
@@ -425,7 +525,9 @@ func (s *Server) retryNotification(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "BAD_REQUEST", "编号无效")
 		return
 	}
-	res, e := s.db.Exec(`UPDATE notification_outbox SET status='pending',next_attempt=CURRENT_TIMESTAMP,last_error='' WHERE id=? AND status!='sent'`, id)
+	// The attempt counter is reset as well, otherwise the automatic retry
+	// limit would immediately park the message again without sending it.
+	res, e := s.db.Exec(`UPDATE notification_outbox SET status='pending',next_attempt=CURRENT_TIMESTAMP,last_error='',attempts=0 WHERE id=? AND status!='sent'`, id)
 	if e != nil {
 		errorResponse(w, e)
 		return
@@ -438,7 +540,7 @@ func (s *Server) retryNotification(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]bool{"queued": true})
 }
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.db.Query(`SELECT id,username,role,active,must_change_password,created_at FROM users ORDER BY id`)
+	rows, e := s.db.Query(`SELECT u.id,u.username,u.role,u.active,u.must_change_password,u.created_at,COALESCE(u.push_token_id,0),COALESCE(t.name,'') FROM users u LEFT JOIN push_tokens t ON t.id=u.push_token_id ORDER BY u.id`)
 	if e != nil {
 		errorResponse(w, e)
 		return
@@ -447,13 +549,14 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id int64
-		var name, role, created string
+		var name, role, created, tokenName string
 		var active, must int
-		if e = rows.Scan(&id, &name, &role, &active, &must, &created); e != nil {
+		var tokenID int64
+		if e = rows.Scan(&id, &name, &role, &active, &must, &created, &tokenID, &tokenName); e != nil {
 			errorResponse(w, e)
 			return
 		}
-		out = append(out, map[string]any{"id": id, "username": name, "role": role, "active": active == 1, "must_change_password": must == 1, "created_at": created})
+		out = append(out, map[string]any{"id": id, "username": name, "role": role, "active": active == 1, "must_change_password": must == 1, "created_at": created, "push_token_id": tokenID, "push_token_name": tokenName})
 	}
 	ok(w, out)
 }
@@ -463,6 +566,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Role     string `json:"role"`
 		Token    string `json:"pushplus_token"`
+		TokenID  int64  `json:"push_token_id"`
 	}
 	if decode(r, &x) != nil || strings.TrimSpace(x.Username) == "" {
 		fail(w, 400, "VALIDATION", "账号名必填")
@@ -477,7 +581,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "WEAK_PASSWORD", e.Error())
 		return
 	}
-	res, e := s.db.Exec(`INSERT INTO users(username,password_hash,role,must_change_password,pushplus_token) VALUES(?,?,?,1,?)`, x.Username, hash, x.Role, x.Token)
+	res, e := s.db.Exec(`INSERT INTO users(username,password_hash,role,must_change_password,pushplus_token,push_token_id) VALUES(?,?,?,1,?,?)`, x.Username, hash, x.Role, x.Token, nullInt(x.TokenID))
 	if e != nil {
 		errorResponse(w, e)
 		return
@@ -491,6 +595,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		Active   *bool   `json:"active"`
 		Password string  `json:"password"`
 		Token    *string `json:"pushplus_token"`
+		TokenID  *int64  `json:"push_token_id"`
 		Role     string  `json:"role"`
 	}
 	if e != nil || decode(r, &x) != nil {
@@ -519,6 +624,9 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if e == nil && x.Token != nil {
 		_, e = tx.Exec(`UPDATE users SET pushplus_token=? WHERE id=?`, *x.Token, id)
 	}
+	if e == nil && x.TokenID != nil {
+		_, e = tx.Exec(`UPDATE users SET push_token_id=? WHERE id=?`, nullInt(*x.TokenID), id)
+	}
 	if e == nil && x.Password != "" {
 		var h string
 		h, e = auth.HashPassword(x.Password)
@@ -540,12 +648,41 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	var token string
 	_ = s.db.QueryRow(`SELECT value FROM settings WHERE key='pushplus_token'`).Scan(&token)
-	ok(w, map[string]any{"timezone": s.cfg.Timezone, "pushplus_token_configured": token != "" || s.cfg.PushPlusToken != "", "pushplus_token": ""})
+	tokens, err := push.NewStore(s.db).List()
+	if err != nil {
+		errorResponse(w, err)
+		return
+	}
+	enabled := 0
+	for _, t := range tokens {
+		if t.Enabled {
+			enabled++
+		}
+	}
+	defaults := s.pushDefaults(r.Context())
+	out := map[string]any{
+		"timezone":                  s.cfg.Timezone,
+		"pushplus_token_configured": token != "" || s.cfg.PushPlusToken != "",
+		"pushplus_token":            "",
+		"tokens_configured":         len(tokens) > 0,
+		"tokens_enabled":            enabled,
+		"tokens_total":              len(tokens),
+	}
+	for k, v := range defaults {
+		out["push."+k] = v
+	}
+	ok(w, out)
 }
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var x struct {
 		Token    string `json:"pushplus_token"`
 		Timezone string `json:"timezone"`
+		Channel  string `json:"push.channel"`
+		Template string `json:"push.template"`
+		Option   string `json:"push.option"`
+		Callback string `json:"push.callback_url"`
+		Timeout  int    `json:"push.timeout_seconds"`
+		Retries  int    `json:"push.retry_limit"`
 	}
 	if decode(r, &x) != nil {
 		fail(w, 400, "BAD_REQUEST", "请求格式错误")
@@ -561,7 +698,61 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if x.Token != "" {
 		_, _ = s.db.Exec(`INSERT INTO settings(key,value) VALUES('pushplus_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, x.Token)
 	}
+	if x.Channel != "" {
+		if !push.ValidChannel(x.Channel) {
+			fail(w, 400, "VALIDATION", "不支持的发送渠道："+x.Channel)
+			return
+		}
+		s.saveSetting(r, "push.channel", x.Channel)
+	}
+	if x.Template != "" {
+		if !push.ValidTemplate(x.Template) {
+			fail(w, 400, "VALIDATION", "不支持的消息模板："+x.Template)
+			return
+		}
+		s.saveSetting(r, "push.template", x.Template)
+	}
+	s.saveSetting(r, "push.option", x.Option)
+	s.saveSetting(r, "push.callback_url", x.Callback)
+	if x.Timeout > 0 {
+		s.saveSetting(r, "push.timeout_seconds", strconv.Itoa(x.Timeout))
+	}
+	if x.Retries > 0 {
+		s.saveSetting(r, "push.retry_limit", strconv.Itoa(x.Retries))
+	}
 	ok(w, map[string]bool{"saved": true})
+}
+
+// saveSetting writes a single settings key.
+func (s *Server) saveSetting(r *http.Request, key, value string) {
+	_, _ = s.db.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+}
+
+// pushDefaults reads the global push settings with the documented defaults.
+func (s *Server) pushDefaults(ctx context.Context) map[string]string {
+	out := map[string]string{"template": "html", "channel": "wechat", "timeout_seconds": "15", "retry_limit": "6"}
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM settings WHERE key LIKE 'push.%'`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err = rows.Scan(&k, &v); err != nil {
+			return out
+		}
+		out[strings.TrimPrefix(k, "push.")] = v
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")

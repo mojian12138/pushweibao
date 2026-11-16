@@ -15,6 +15,7 @@ import (
 
 	"maintenance-reminder/internal/auth"
 	"maintenance-reminder/internal/config"
+	"maintenance-reminder/internal/systemlog"
 	assets "maintenance-reminder/web"
 )
 
@@ -25,6 +26,8 @@ type Server struct {
 	assets fs.FS
 	mu     sync.Mutex
 	fails  map[string][]time.Time
+	// logger records the events that the log page shows.
+	logger *systemlog.Logger
 }
 
 type envelope struct {
@@ -47,6 +50,9 @@ type contextKey string
 
 const userKey contextKey = "user"
 
+// remoteAddrKey holds the address of the caller, for the log.
+const remoteAddrKey contextKey = "remote_addr"
+
 func New(database *sql.DB, dbPath string, cfg config.Config) *Server {
 	return &Server{db: database, dbPath: dbPath, cfg: cfg, assets: assets.FS(), fails: map[string][]time.Time{}}
 }
@@ -67,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/devices", s.requireUser(http.HandlerFunc(s.listDevices)))
 	mux.Handle("POST /api/devices", s.requireAdmin(http.HandlerFunc(s.createDevice)))
 	mux.Handle("PUT /api/devices/{id}", s.requireAdmin(http.HandlerFunc(s.updateDevice)))
+	mux.Handle("GET /api/devices/{id}", s.requireUser(http.HandlerFunc(s.getDevice)))
 	mux.Handle("DELETE /api/devices/{id}", s.requireAdmin(http.HandlerFunc(s.deleteDevice)))
 	mux.Handle("GET /api/dashboard", s.requireUser(http.HandlerFunc(s.dashboard)))
 	mux.Handle("GET /api/strategies", s.requireUser(http.HandlerFunc(s.listStrategies)))
@@ -77,6 +84,19 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/notifications/{id}/retry", s.requireAdmin(http.HandlerFunc(s.retryNotification)))
 	mux.Handle("GET /api/settings", s.requireAdmin(http.HandlerFunc(s.getSettings)))
 	mux.Handle("PUT /api/settings", s.requireAdmin(http.HandlerFunc(s.putSettings)))
+	mux.Handle("GET /api/push-options", s.requireAdmin(http.HandlerFunc(s.pushOptions)))
+	mux.Handle("GET /api/message-formats", s.requireUser(http.HandlerFunc(s.messageFormats)))
+	mux.Handle("POST /api/preview/strategy", s.requireAdmin(http.HandlerFunc(s.previewStrategy)))
+	mux.Handle("POST /api/preview/device/{id}", s.requireAdmin(http.HandlerFunc(s.previewDevice)))
+	mux.Handle("POST /api/preview/token", s.requireAdmin(http.HandlerFunc(s.previewToken)))
+	mux.Handle("GET /api/logs", s.requireUser(http.HandlerFunc(s.listLogs)))
+	mux.Handle("GET /api/logs/meta", s.requireUser(http.HandlerFunc(s.listLogMeta)))
+	mux.Handle("GET /api/push-tokens", s.requireAdmin(http.HandlerFunc(s.listPushTokens)))
+	mux.Handle("POST /api/push-tokens", s.requireAdmin(http.HandlerFunc(s.createPushToken)))
+	mux.Handle("PUT /api/push-tokens/{id}", s.requireAdmin(http.HandlerFunc(s.updatePushToken)))
+	mux.Handle("DELETE /api/push-tokens/{id}", s.requireAdmin(http.HandlerFunc(s.deletePushToken)))
+	mux.Handle("POST /api/push-tokens/{id}/enabled", s.requireAdmin(http.HandlerFunc(s.setPushTokenEnabled)))
+	mux.Handle("POST /api/push-tokens/{id}/test", s.requireAdmin(http.HandlerFunc(s.testPushToken)))
 	mux.Handle("GET /api/users", s.requireAdmin(http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/users", s.requireAdmin(http.HandlerFunc(s.createUser)))
 	mux.Handle("PUT /api/users/{id}", s.requireAdmin(http.HandlerFunc(s.updateUser)))
@@ -88,6 +108,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/projects/{id}/devices/import", s.requireAdmin(http.HandlerFunc(s.importProjectDevices)))
 	mux.Handle("POST /api/devices/{id}/test-push", s.requireAdmin(http.HandlerFunc(s.testDevicePush)))
 	mux.Handle("POST /api/strategies/{id}/test", s.requireAdmin(http.HandlerFunc(s.testStrategyPush)))
+	// A strategy that has not been saved yet can still be tested, so that
+	// the user can check the message before saving it.
+	mux.Handle("POST /api/strategies/test", s.requireAdmin(http.HandlerFunc(s.testDraftStrategyPush)))
 	mux.Handle("GET /api/export.csv", s.requireAdmin(http.HandlerFunc(s.exportCSV)))
 	mux.Handle("GET /api/backup", s.requireAdmin(http.HandlerFunc(s.backup)))
 	mux.Handle("GET /", s.static())
@@ -98,6 +121,10 @@ func (s *Server) static() http.Handler {
 	files := http.FileServer(http.FS(s.assets))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/static/") {
+			// The assets are embedded in the binary, so they change with every
+			// release. Without this header browsers heuristically cache them
+			// and keep serving the previous build.
+			w.Header().Set("Cache-Control", "no-cache")
 			http.StripPrefix("/static/", files).ServeHTTP(w, r)
 			return
 		}
@@ -120,7 +147,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:")
+		// Inline styles are allowed, because a message is written with them:
+		// the phone shows a message by its own style attributes, so the
+		// preview must keep them to look like the message. Scripts stay
+		// limited to the files of the program.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -156,7 +187,9 @@ func (s *Server) requireUser(next http.Handler) http.Handler {
 				return
 			}
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		ctx := context.WithValue(r.Context(), userKey, u)
+		ctx = context.WithValue(ctx, remoteAddrKey, r.RemoteAddr)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
