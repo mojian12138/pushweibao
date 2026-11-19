@@ -109,3 +109,51 @@ func TestStrategyCronTriggerChecks(t *testing.T) {
 		t.Errorf("the schedule was not kept: %v", data["cron_expr"])
 	}
 }
+
+// TestStrategyListWithBoundTemplateDoesNotDeadlock checks that a strategy
+// pointing at a template is listed without the server waiting on itself:
+// the row loop of the list used to ask the database for the template while
+// the outer rows still held the only connection, and every request of the
+// server froze until the list timed out.
+func TestStrategyListWithBoundTemplateDoesNotDeadlock(t *testing.T) {
+	server, _ := newTestServerWithDB(t)
+	cookie, csrf := login(t, server, "admin", "SuperSecret12345")
+
+	status, out := do(t, server, cookie, csrf, http.MethodPost, "/api/push-templates", map[string]any{
+		"name": "回归模板", "kind": "milestone", "format": "markdown",
+		"title_template": "【回归】", "body_template": "## 提醒\n\n{{milestone_items}}",
+	})
+	if status != 200 {
+		t.Fatalf("create template: %d %v", status, out)
+	}
+	tplID := int64(out["data"].(map[string]any)["id"].(float64))
+
+	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/strategies", map[string]any{
+		"name": "绑定模板的策略", "type": "milestone", "enabled": true, "template_id": tplID,
+	})
+	if status != 200 {
+		t.Fatalf("create strategy: %d %v", status, out)
+	}
+
+	// The list has to come back while the database keeps its single
+	// connection: a deadlock here would hang the request until the client
+	// gave up.
+	status, out = do(t, server, cookie, csrf, http.MethodGet, "/api/strategies", nil)
+	if status != 200 {
+		t.Fatalf("list strategies: %d %v", status, out)
+	}
+	list, _ := out["data"].([]any)
+	var found map[string]any
+	for _, item := range list {
+		x := item.(map[string]any)
+		if x["template_name"] == "回归模板" {
+			found = x
+		}
+	}
+	if found == nil {
+		t.Fatalf("the bound template was not shown: %v", list)
+	}
+	if found["template"] != "## 提醒\n\n{{milestone_items}}" {
+		t.Errorf("the words of the template were not used: %v", found["template"])
+	}
+}

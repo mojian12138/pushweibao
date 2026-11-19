@@ -475,7 +475,13 @@ func strategySampleBody(s *Server, x Strategy) string {
 }
 
 func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
-	rows, e := s.db.Query(`SELECT id,name,type,enabled,sort_order,offsets,monthly_day,horizon_days,cycle_threshold,cycle_interval,template,title_template,item_template,recipients,COALESCE(token_id,0),format,COALESCE(cron_expr,''),COALESCE(template_id,0) FROM strategies ORDER BY sort_order,id`)
+	// The words of a bound template travel with the strategy through one
+	// LEFT JOIN. A query inside the row loop would need a second database
+	// connection while the outer rows still hold the only one, and the
+	// whole server would wait on itself.
+	rows, e := s.db.Query(`SELECT s.id,s.name,s.type,s.enabled,s.sort_order,s.offsets,s.monthly_day,s.horizon_days,s.cycle_threshold,s.cycle_interval,s.template,s.title_template,s.item_template,s.recipients,COALESCE(s.token_id,0),s.format,COALESCE(s.cron_expr,''),COALESCE(s.template_id,0),
+		COALESCE(t.name,''),COALESCE(t.kind,''),COALESCE(t.format,''),COALESCE(t.title_template,''),COALESCE(t.body_template,''),COALESCE(t.item_template,'')
+		FROM strategies s LEFT JOIN push_templates t ON t.id=s.template_id ORDER BY s.sort_order,s.id`)
 	if e != nil {
 		errorResponse(w, e)
 		return
@@ -486,26 +492,25 @@ func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
 		var x Strategy
 		var enabled int
 		var offsets, recipients string
-		if e = rows.Scan(&x.ID, &x.Name, &x.Type, &enabled, &x.Sort, &offsets, &x.MonthlyDay, &x.Horizon, &x.CycleThreshold, &x.CycleInterval, &x.Template, &x.TitleTemplate, &x.ItemTemplate, &recipients, &x.TokenID, &x.Format, &x.CronExpr, &x.TemplateID); e != nil {
+		var tName, tKind, tFormat, tTitle, tBody, tItem string
+		if e = rows.Scan(&x.ID, &x.Name, &x.Type, &enabled, &x.Sort, &offsets, &x.MonthlyDay, &x.Horizon, &x.CycleThreshold, &x.CycleInterval, &x.Template, &x.TitleTemplate, &x.ItemTemplate, &recipients, &x.TokenID, &x.Format, &x.CronExpr, &x.TemplateID,
+			&tName, &tKind, &tFormat, &tTitle, &tBody, &tItem); e != nil {
 			errorResponse(w, e)
 			return
 		}
 		if strings.TrimSpace(x.CronExpr) != "" {
 			x.Describe = cron.Describe(x.CronExpr)
 		}
-		if x.TemplateID > 0 {
-			if e := s.db.QueryRow(`SELECT name FROM push_templates WHERE id=?`, x.TemplateID).Scan(&x.TemplateName); e == nil {
-				// The strategy sends the words of its template, so the
-				// preview of the list renders that template.
-				var kind, format, title, body, item string
-				if e := s.db.QueryRow(`SELECT kind,format,title_template,body_template,item_template FROM push_templates WHERE id=?`, x.TemplateID).Scan(&kind, &format, &title, &body, &item); e == nil {
-					x.Type = kind
-					x.Format = template.NormalizeFormat(format)
-					x.TitleTemplate = title
-					x.Template = body
-					x.ItemTemplate = item
-				}
-			}
+		// A strategy that points at a living template sends the words of
+		// that template, so the list shows them and the preview renders
+		// them.
+		if x.TemplateID > 0 && tName != "" {
+			x.TemplateName = tName
+			x.Type = tKind
+			x.Format = template.NormalizeFormat(tFormat)
+			x.TitleTemplate = tTitle
+			x.Template = tBody
+			x.ItemTemplate = tItem
 		}
 		x.Enabled = enabled == 1
 		_ = json.Unmarshal([]byte(offsets), &x.Offsets)

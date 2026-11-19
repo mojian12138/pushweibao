@@ -163,6 +163,25 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 				}
 			}
 			if grouped {
+				// The window message fires on the cron schedule when the
+				// strategy carries one, or on the first scan of the day
+				// otherwise. The dedupe key carries the fire time, so a
+				// schedule that fires several times a day sends one
+				// message per fire, while the same fire on a repeated
+				// scan does not repeat the message.
+				var fireKey string
+				if strings.TrimSpace(x.CronExpr) != "" {
+					sched, e := cron.Parse(x.CronExpr)
+					if e != nil {
+						return fmt.Errorf("策略 %s 的 cron 表达式无效: %w", x.Name, e)
+					}
+					if !sched.Matches(now) {
+						continue
+					}
+					fireKey = now.Format("2006-01-02T15:04")
+				} else {
+					fireKey = today
+				}
 				widest := 0
 				for _, o := range offsets {
 					if o > widest {
@@ -194,15 +213,20 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 						rep = h
 					}
 				}
-				triggerLabels := []string{}
-				for _, o := range template.MilestoneTiers(offsets) {
-					triggerLabels = append(triggerLabels, fmt.Sprintf("%d 天", o))
+				trigger := "窗口汇总"
+				if strings.TrimSpace(x.CronExpr) != "" {
+					trigger = cron.Describe(x.CronExpr)
+				} else {
+					triggerLabels := []string{}
+					for _, o := range template.MilestoneTiers(offsets) {
+						triggerLabels = append(triggerLabels, fmt.Sprintf("%d 天", o))
+					}
+					trigger = strings.Join(triggerLabels, "、")
 				}
-				trigger := strings.Join(triggerLabels, "、")
 				msg := template.RenderMilestone(x.Template, items, rep.Device, rep.Days)
 				title := renderMilestoneTitle(x.TitleTemplate, rep.Device, rep.Days, len(windowHits))
 				for _, tg := range targets {
-					key := fmt.Sprintf("mw:%d:%s:%s", x.ID, today, tg.Recipient)
+					key := fmt.Sprintf("mw:%d:%s:%s", x.ID, fireKey, tg.Recipient)
 					if err := s.enqueue(ctx, key, device{ID: rep.ID}, x.Name, trigger, tg, title, msg, x.Format); err != nil {
 						return err
 					}
