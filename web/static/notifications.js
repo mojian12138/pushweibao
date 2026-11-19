@@ -135,14 +135,21 @@ function parseCronToUI(expr){
   return{mode:'custom',expr:expr};
 }
 
-// uiToCron builds the expression from the visual fields of a mode.
+// hourOptions / minuteOptions are the choices of the visual time pickers.
+// Two plain selects keep the value always present — a native time input
+// loses half-typed values when the form is submitted too early, which is
+// how a schedule could be saved with the old time.
+const hourOptions=()=>Array.from({length:24},(_,h)=>`<option value="${h}" >${String(h).padStart(2,'0')} 点</option>`).join('');
+const minuteOptions=()=>Array.from({length:60},(_,m)=>`<option value="${m}">${String(m).padStart(2,'0')} 分</option>`).join('');
+const picked=(list,v)=>list.replace(/value="(\d+)"/g,(m,num)=>`value="${num}" ${Number(v)===Number(num)?'selected':''}`);
+
+// uiToCron builds the expression from the visual fields of a mode. The
+// fields are the select pairs: daily_hour/daily_min and so on.
 function uiToCron(mode,f){
-  const mm=v=>String(Number(v)||0);
-  const hh=v=>{const[h]=String(v).split(':');return String(Number(h)||0);};
-  const mi=v=>{const[,m]=String(v).split(':');return String(Number(m)||0);};
-  if(mode==='daily')return `${mm(mi(f.daily_time))} ${hh(f.daily_time)} * * *`;
-  if(mode==='weekly')return `${mm(mi(f.weekly_time))} ${hh(f.weekly_time)} * * ${Number(f.weekly_day)||1}`;
-  if(mode==='monthly')return `${mm(mi(f.monthly_time))} ${hh(f.monthly_time)} ${Math.min(Math.max(Number(f.monthly_day2)||1,1),28)} * *`;
+  const nm=v=>String(Number(v)||0);
+  if(mode==='daily')return `${nm(f.daily_min)} ${nm(f.daily_hour)} * * *`;
+  if(mode==='weekly')return `${nm(f.weekly_min)} ${nm(f.weekly_hour)} * * ${Number(f.weekly_day)||1}`;
+  if(mode==='monthly')return `${nm(f.monthly_min)} ${nm(f.monthly_hour)} ${Math.min(Math.max(Number(f.monthly_day2)||1,1),28)} * *`;
   return f.cron_expr||'';
 }
 
@@ -183,14 +190,14 @@ async function strategyEditorModal(x={}){
       <label>什么时候推<select name="trigger_mode">${modeOptions.map(([v,l])=>`<option value="${v}" ${mode0===v?'selected':''}>${l}</option>`).join('')}</select></label>
       <div class="trigger-fields span-2">
         <label class="tf tf-window">提醒节点（设备剩余多少天时提醒，逗号分隔）<input name="offsets_text" value="${esc(offsets0)}"></label>
-        <label class="tf tf-daily">推送时间<input type="time" name="daily_time" value="${parsed.mode==='daily'?String(parsed.hour).padStart(2,'0')+':'+String(parsed.minute).padStart(2,'0'):(parsed.mode==='monthly'?'00:00':'09:00')}"></label>
+        <label class="tf tf-daily">推送时间（小时与分钟）<span class="time-pair"><select name="daily_hour">${picked(hourOptions(),parsed.mode==='daily'?parsed.hour:'9')}</select><select name="daily_min">${picked(minuteOptions(),parsed.mode==='daily'?parsed.minute:'0')}</select></span></label>
         <div class="tf tf-weekly tf-pair">
           <label>星期<select name="weekly_day">${WEEKDAYS.map(([v,l])=>`<option value="${v}" ${(parsed.mode==='weekly'?parsed.weekday:1)===v?'selected':''}>${l}</option>`).join('')}</select></label>
-          <label>推送时间<input type="time" name="weekly_time" value="${parsed.mode==='weekly'?String(parsed.hour).padStart(2,'0')+':'+String(parsed.minute).padStart(2,'0'):'09:00'}"></label>
+          <label>推送时间<span class="time-pair"><select name="weekly_hour">${picked(hourOptions(),parsed.mode==='weekly'?parsed.hour:'9')}</select><select name="weekly_min">${picked(minuteOptions(),parsed.mode==='weekly'?parsed.minute:'0')}</select></span></label>
         </div>
         <div class="tf tf-monthly tf-pair">
           <label>每月几号<input type="number" name="monthly_day2" min="1" max="28" value="${parsed.mode==='monthly'?parsed.day:((x.monthly_day||1))}"></label>
-          <label>推送时间<input type="time" name="monthly_time" value="${parsed.mode==='monthly'?String(parsed.hour).padStart(2,'0')+':'+String(parsed.minute).padStart(2,'0'):'09:00'}"></label>
+          <label>推送时间<span class="time-pair"><select name="monthly_hour">${picked(hourOptions(),parsed.mode==='monthly'?parsed.hour:'9')}</select><select name="monthly_min">${picked(minuteOptions(),parsed.mode==='monthly'?parsed.minute:'0')}</select></span></label>
         </div>
         <div class="tf tf-custom">
           <label>Cron 表达式（分 时 日 月 周）<input name="cron_expr" value="${esc(parsed.mode==='custom'?parsed.expr:'')}" placeholder="如：0 9,18 * * 1-5"></label>
@@ -250,7 +257,7 @@ async function strategyEditorModal(x={}){
     }
   };
   form.elements.trigger_mode.onchange=refreshTrigger;
-  ['daily_time','weekly_time','weekly_day','monthly_day2','monthly_time','cycle_threshold','cycle_interval'].forEach(n=>{form.elements[n].oninput=refreshTrigger;});
+  ['daily_hour','daily_min','weekly_day','weekly_hour','weekly_min','monthly_day2','monthly_hour','monthly_min','cycle_threshold','cycle_interval'].forEach(n=>{form.elements[n].onchange=refreshTrigger;});
   form.elements.cron_expr.oninput=refreshTrigger;
   refreshTrigger();
 
@@ -312,6 +319,16 @@ async function strategyEditorModal(x={}){
     try{
       await action('/strategies'+(x.id?'/'+x.id:''),x.id?'PUT':'POST',v);
       wrap.remove();
+      // The saved schedule is echoed back, so a time that did not take is
+      // seen right away instead of being discovered on the phone.
+      let msg='策略已保存';
+      if(v.cron_expr){
+        try{
+          const d=await api('/cron-describe',{method:'POST',body:JSON.stringify({expr:v.cron_expr})});
+          msg='策略已保存，推送时间：'+d.data.describe;
+        }catch(e){}
+      }
+      alert(msg);
       render();
     }catch(err){
       const box2=form.querySelector('.error');box2.textContent=err.message;box2.hidden=false;

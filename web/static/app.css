@@ -154,3 +154,8 @@
 details.more-options{border:1px solid #e3e8ea;border-radius:8px;padding:8px 12px}
 details.more-options summary{cursor:pointer;color:#40545a;font-size:13px}
 details.more-options label{display:block;margin-top:8px}
+
+/* The time pickers of the trigger builder: two selects side by side, so a
+   half-typed native time input can never lose its value. */
+.time-pair{display:flex;gap:6px}
+.time-pair select{flex:1}
