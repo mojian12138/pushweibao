@@ -28,6 +28,10 @@ func (s *Server) listLogs(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "VALIDATION", "日志级别无效")
 		return
 	}
+	if query.Category != "" && !validLogCategory(query.Category) {
+		fail(w, 400, "VALIDATION", "日志分类无效")
+		return
+	}
 	total, err := s.log().Count(query)
 	if err != nil {
 		errorResponse(w, err)
@@ -62,11 +66,7 @@ func (s *Server) listLogMeta(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// log returns the logger of the server.
 func (s *Server) log() *systemlog.Logger {
-	if s.logger == nil {
-		s.logger = &systemlog.Logger{DB: s.db}
-	}
 	return s.logger
 }
 
@@ -74,6 +74,14 @@ func (s *Server) log() *systemlog.Logger {
 func validLogLevel(level string) bool {
 	switch level {
 	case systemlog.LevelDebug, systemlog.LevelInfo, systemlog.LevelWarn, systemlog.LevelError:
+		return true
+	}
+	return false
+}
+
+func validLogCategory(category string) bool {
+	switch category {
+	case systemlog.CategorySystem, systemlog.CategoryAuth, systemlog.CategoryPush, systemlog.CategorySchedule, systemlog.CategoryData, systemlog.CategoryStrategy:
 		return true
 	}
 	return false

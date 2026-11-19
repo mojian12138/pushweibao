@@ -66,7 +66,7 @@ function bindMarkers(root,areas){
 // and each format has its own ready-made templates, which the editor offers
 // so that the user does not have to write them from scratch.
 function templateEditor(opts){
-  const {kind='milestone',title='',content='',item='',markers,titleMarkers,format='html',formats=[]}=opts;
+  const {kind='milestone',title='',content='',item='',markers,titleMarkers,format='markdown',formats=[]}=opts;
   const opts2=(formats.length?formats:DEFAULT_FORMATS).map(f=>`<option value="${f.value}" ${f.value===format?'selected':''}>${esc(f.label)}</option>`).join('');
   const hint=(formats.length?formats:DEFAULT_FORMATS).find(f=>f.value===format)?.hint||'';
   return `
@@ -106,11 +106,12 @@ function templateEditor(opts){
 }
 
 // The formats the editor offers when the server did not send the list. The
-// server is the source of truth; this is only a fallback.
+// server is the source of truth; this is only a fallback. Markdown comes
+// first, because the messages default to it.
 const DEFAULT_FORMATS=[
-  {value:'html',label:'HTML',hint:'支持 HTML 文本。为空时默认使用 HTML 模板。'},
+  {value:'markdown',label:'Markdown',hint:'内容基于 Markdown 格式展示，推荐使用。'},
+  {value:'html',label:'HTML',hint:'支持 HTML 文本。'},
   {value:'txt',label:'纯文本',hint:'纯文本内容，不转义 HTML，换行使用 \\n。'},
-  {value:'markdown',label:'Markdown',hint:'内容基于 Markdown 格式展示。'},
 ];
 
 // presetOptions lists the ready-made templates for a kind. The names match

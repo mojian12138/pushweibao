@@ -54,7 +54,7 @@ const userKey contextKey = "user"
 const remoteAddrKey contextKey = "remote_addr"
 
 func New(database *sql.DB, dbPath string, cfg config.Config) *Server {
-	return &Server{db: database, dbPath: dbPath, cfg: cfg, assets: assets.FS(), fails: map[string][]time.Time{}}
+	return &Server{db: database, dbPath: dbPath, cfg: cfg, assets: assets.FS(), fails: map[string][]time.Time{}, logger: &systemlog.Logger{DB: database}}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -80,6 +80,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/strategies", s.requireAdmin(http.HandlerFunc(s.createStrategy)))
 	mux.Handle("PUT /api/strategies/{id}", s.requireAdmin(http.HandlerFunc(s.updateStrategy)))
 	mux.Handle("DELETE /api/strategies/{id}", s.requireAdmin(http.HandlerFunc(s.deleteStrategy)))
+	mux.Handle("POST /api/strategies/reorder", s.requireAdmin(http.HandlerFunc(s.reorderStrategies)))
+	mux.Handle("GET /api/push-templates", s.requireUser(http.HandlerFunc(s.listTemplates)))
+	mux.Handle("POST /api/push-templates", s.requireAdmin(http.HandlerFunc(s.createTemplate)))
+	mux.Handle("PUT /api/push-templates/{id}", s.requireAdmin(http.HandlerFunc(s.updateTemplate)))
+	mux.Handle("DELETE /api/push-templates/{id}", s.requireAdmin(http.HandlerFunc(s.deleteTemplateHandler)))
+	mux.Handle("POST /api/push-templates/{id}/reset", s.requireAdmin(http.HandlerFunc(s.resetTemplateHandler)))
+	mux.Handle("POST /api/cron-describe", s.requireUser(http.HandlerFunc(s.cronDescribe)))
 	mux.Handle("GET /api/notifications", s.requireUser(http.HandlerFunc(s.listNotifications)))
 	mux.Handle("POST /api/notifications/{id}/retry", s.requireAdmin(http.HandlerFunc(s.retryNotification)))
 	mux.Handle("GET /api/settings", s.requireAdmin(http.HandlerFunc(s.getSettings)))
@@ -240,6 +247,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRow(`SELECT id,username,role,must_change_password,password_hash,active FROM users WHERE username=?`, strings.TrimSpace(req.Username)).Scan(&u.ID, &u.Username, &u.Role, &u.MustChangePassword, &hash, &active)
 	if err != nil || active != 1 || !auth.CheckPassword(hash, req.Password) {
 		s.recordFailure(ip)
+		s.log().Record(systemlog.Entry{Level: systemlog.LevelWarn, Category: systemlog.CategoryAuth, Action: "login_failed", Message: "登录失败", Detail: "账号=" + strings.TrimSpace(req.Username), Actor: strings.TrimSpace(req.Username), IP: ip})
 		fail(w, 401, "INVALID_CREDENTIALS", "账号或密码错误")
 		return
 	}
@@ -259,6 +267,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "INTERNAL", "无法创建会话")
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategoryAuth, Action: "login_succeeded", Message: "用户登录成功", Actor: u.Username, RefType: "user", RefID: u.ID, IP: ip})
 	http.SetCookie(w, &http.Cookie{Name: "maintenance_session", Value: token, Path: "/", HttpOnly: true, Secure: s.cfg.HTTP.SecureCookie, SameSite: http.SameSiteStrictMode, Expires: expires})
 	u.CSRF = csrf
 	writeJSON(w, 200, envelope{OK: true, Data: u})

@@ -54,6 +54,13 @@ var deviceMarkers = []Placeholder{
 	{Key: "owner", Label: "负责人", Sample: "李四"},
 }
 
+// milestoneMarkers are available to the milestone reminder. They cover a
+// single device and the grouped list of the devices of the window, so that
+// a template can hold either one.
+var milestoneMarkers = append(append([]Placeholder{}, deviceMarkers...),
+	Placeholder{Key: "milestone_items", Label: "窗口内设备列表（按档位分组）", Sample: "### ⏰ 剩余 ≤30 天 · 2 台\n\n| 项目 | 设备 | SN | 到期 | 剩余 | 负责人 |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| 示例项目 | 示例厂商 XC-200 | SN000123 | 2026-12-31 | **30 天** | 李四 |\n| 示例项目 | 示例厂商 XC-100 | SN000456 | 2026-12-29 | **28 天** | 李四 |"},
+)
+
 // summaryMarkers are available to the monthly summary, which covers many
 // devices at once.
 var summaryMarkers = []Placeholder{
@@ -62,6 +69,8 @@ var summaryMarkers = []Placeholder{
 	{Key: "items", Label: "即将到期设备明细", Sample: "项目：示例项目 客户：示例客户 型号：XC-200 SN：SN000123 到期：2026-12-31 剩余：30 负责人：李四"},
 	{Key: "expired", Label: "已过期设备明细", Sample: "项目：示例项目 客户：示例客户 型号：XC-100 SN：SN000456 到期：2026-10-01 剩余：-5 负责人：王五"},
 	{Key: "expired_count", Label: "已过期设备数", Sample: "1"},
+	{Key: "upcoming_section", Label: "即将到期区块（带小标题与统计）", Sample: "### 🔔 即将到期 · 2 台\n\n| 项目 | 型号 | SN | 到期 | 剩余 | 负责人 |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| 示例项目 | XC-200 | SN000123 | 2026-12-31 | **30 天** | 李四 |\n| 示例项目 | XC-100 | SN000456 | 2026-12-08 | **7 天** | 李四 |"},
+	{Key: "expired_section", Label: "已过期区块（带小标题与统计）", Sample: "### ⛔ 已过期 · 1 台\n\n| 项目 | 型号 | SN | 到期 | 剩余 | 负责人 |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| 示例项目 | XC-100 | SN000456 | 2026-10-01 | **-5 天** | 王五 |"},
 }
 
 // itemMarkers are available in the template that lays out one line of the
@@ -115,6 +124,12 @@ type Summary struct {
 	Items        string
 	Expired      string
 	ExpiredCount int
+	// UpcomingSection and ExpiredSection hold the blocks the summary
+	// builder laid out: a heading with the count and, under it, the lines
+	// of the devices. They fill {{upcoming_section}} and
+	// {{expired_section}} of the template.
+	UpcomingSection string
+	ExpiredSection  string
 	// Device and Days hold one representative record, so that the preview of
 	// a monthly reminder can also show a rendered item line.
 	Device Device
@@ -130,6 +145,8 @@ func PlaceholdersFor(kind string, forTitle bool) []Placeholder {
 	switch kind {
 	case KindMonthly:
 		return summaryMarkers
+	case KindMilestone:
+		return milestoneMarkers
 	default:
 		return deviceMarkers
 	}
@@ -197,21 +214,50 @@ func Render(text string, d Device, days int) string {
 	return replace(text, values)
 }
 
-// RenderSummary replaces the markers in a monthly template.
+// RenderMilestone replaces the markers of a milestone template. The device
+// markers are filled from the representative record, the one the message
+// is about; {{milestone_items}} is filled with the grouped list of every
+// device that fired, or with the single device when the message holds one.
+func RenderMilestone(text, items string, d Device, days int) string {
+	values := map[string]string{
+		"project":         d.Project,
+		"customer":        d.Customer,
+		"contact":         d.Contact,
+		"vendor":          d.Vendor,
+		"model":           d.Model,
+		"sn":              d.SN,
+		"start":           d.Start,
+		"end":             d.End,
+		"days":            fmt.Sprint(days),
+		"notes":           d.Notes,
+		"owner":           d.Owner,
+		"device":          strings.TrimSpace(d.Vendor + " " + d.Model),
+		"milestone_items": items,
+	}
+	return replace(text, values)
+}
+
+// RenderSummary replaces the markers in a monthly template. The section
+// markers {{upcoming_section}} and {{expired_section}} are filled with the
+// blocks the summary builder laid out; when the builder produced nothing
+// for a block, its marker is dropped, so that no empty heading remains.
 func RenderSummary(text string, s Summary) string {
 	values := map[string]string{
-		"month":         s.Month,
-		"count":         fmt.Sprint(s.Count),
-		"items":         s.Items,
-		"expired":       s.Expired,
-		"expired_count": fmt.Sprint(s.ExpiredCount),
+		"month":            s.Month,
+		"count":            fmt.Sprint(s.Count),
+		"items":            s.Items,
+		"expired":          s.Expired,
+		"expired_count":    fmt.Sprint(s.ExpiredCount),
+		"upcoming_section": s.UpcomingSection,
+		"expired_section":  s.ExpiredSection,
 	}
 	return replace(text, values)
 }
 
 // RenderTitle replaces the markers in a title template. It accepts both the
 // device markers and the summary markers, so that one title template works
-// for every kind of reminder.
+// for every kind of reminder. A title rendered for a single device counts
+// that device, so {{count}} never shows up empty.
 func RenderTitle(text string, d Device, days int) string {
 	values := map[string]string{
 		"project":  d.Project,
@@ -227,7 +273,7 @@ func RenderTitle(text string, d Device, days int) string {
 		"owner":    d.Owner,
 		"device":   strings.TrimSpace(d.Vendor + " " + d.Model),
 		"month":    "",
-		"count":    "",
+		"count":    "1",
 	}
 	return replace(text, values)
 }
@@ -260,6 +306,24 @@ func RenderTitleSummary(text string, s Summary) string {
 	return replace(text, values)
 }
 
+// ReplaceKeys swaps every marker it knows with the value the map holds.
+// Unknown markers are left untouched so that a validation mistake stays
+// visible in the preview. It is exported for the renderers outside the
+// package that compose a title from their own values.
+func ReplaceKeys(text string, values map[string]string) string {
+	return replace(text, values)
+}
+
+// KnownMarker reports whether a text uses the marker with the key given.
+func KnownMarker(text, key string) bool {
+	for _, m := range markerPattern.FindAllStringSubmatch(text, -1) {
+		if m[1] == key {
+			return true
+		}
+	}
+	return false
+}
+
 // replace swaps every known marker. Unknown markers are left untouched so
 // that a validation mistake stays visible in the preview.
 func replace(text string, values map[string]string) string {
@@ -280,6 +344,21 @@ func Sample(kind, text string) string {
 	markers := PlaceholdersFor(kind, false)
 	values := map[string]string{}
 	for _, p := range markers {
+		values[p.Key] = p.Sample
+	}
+	return replace(text, values)
+}
+
+// SampleWithout renders a template with the sample values of its kind and
+// leaves one marker out, so that the caller can fill it with a layout that
+// belongs to the format of the message instead of a sample text.
+func SampleWithout(kind, text, skip string) string {
+	markers := PlaceholdersFor(kind, false)
+	values := map[string]string{}
+	for _, p := range markers {
+		if p.Key == skip {
+			continue
+		}
 		values[p.Key] = p.Sample
 	}
 	return replace(text, values)

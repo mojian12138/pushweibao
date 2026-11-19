@@ -142,6 +142,8 @@ func TestPreviewSendsTheMessageAsHTML(t *testing.T) {
 	}
 	data := out["data"].(map[string]any)
 	html, _ := data["html"].(string)
+	// The markdown layout draws the tiers as headings with a table of the
+	// devices under each one.
 	if !strings.Contains(html, "<table>") {
 		t.Errorf("the html of the preview has no table: %q", html)
 	}

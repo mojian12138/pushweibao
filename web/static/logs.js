@@ -40,7 +40,7 @@ async function logs(){
       <button class="secondary" id="logReset">重置</button>
     </div>
     <div class="muted" style="margin-bottom:10px">共 ${data.total||0} 条，第 ${page} / ${pages} 页</div>
-    <div id="rows">${table(['时间','级别','分类','操作','消息','账号','IP'],(data.items||[]).map(l=>[esc(l.created_at),levelBadge(l.level),esc(categoryLabel(l.category)),esc(l.action),esc(l.message),esc(l.actor),esc(l.ip)]))}</div>
+	    <div id="rows">${table(['时间','级别','分类','操作','消息','详情','账号','IP'],(data.items||[]).map(l=>[esc(l.created_at),levelBadge(l.level),esc(categoryLabel(l.category)),esc(l.action),esc(l.message),`<details><summary>查看</summary><pre class="log-detail">${esc(l.detail||'')}</pre></details>`,esc(l.actor),esc(l.ip)]))}</div>
     <div class="toolbar" style="margin-top:12px">
       <button class="secondary" id="logPrev" ${page<=1?'disabled':''}>上一页</button>
       <button class="secondary" id="logNext" ${page>=pages?'disabled':''}>下一页</button>

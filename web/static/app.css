@@ -120,3 +120,37 @@
 .strategy-preview table{min-width:0;width:auto}
 .strategy-preview th,.strategy-preview td{white-space:normal}
 @media(max-width:900px){.editor{grid-template-columns:1fr}}
+
+/* The notifications page: the head of a panel with its caption, the card
+   of a message template and the fields of a cron trigger. */
+.panel-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.panel-head h2{margin:0}
+.panel-head .muted{font-size:12px}
+.template-card{border:1px solid #e3e8ea;border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.template-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.template-head .row-actions{margin-left:auto}
+.cron-fields span{display:block;margin-bottom:6px;color:#40545a}
+.cron-fields input[name=cron_expr]{margin-top:6px}
+.cron-input{background:#f5f8f8}
+.cron-hint{min-height:16px}
+
+/* The simple strategy editor: a template preview inside the form and the
+   rows of the cron trigger. */
+.template-preview-box{grid-column:span 2;border:1px solid #e3e8ea;border-radius:8px;padding:10px 12px;max-height:320px;overflow:auto;background:#fbfcfc}
+.template-preview-box .preview-title{font-weight:bold;margin-bottom:6px}
+.template-preview-html{margin-top:8px;max-height:260px;overflow:auto}
+.muted-link textarea{margin-bottom:6px}
+.muted-link select{width:100%}
+.cron-custom-row[hidden]{display:none}
+
+/* The visual trigger builder of the strategy editor: only the fields of
+   the chosen mode show, and the schedule is described in plain words under
+   the fields. */
+.trigger-fields{display:flex;flex-direction:column;gap:8px}
+.trigger-fields .tf[hidden]{display:none}
+.tf-pair{display:flex;gap:10px}
+.tf-pair label{flex:1}
+.trigger-hint{min-height:18px;margin:0;color:#197d77}
+details.more-options{border:1px solid #e3e8ea;border-radius:8px;padding:8px 12px}
+details.more-options summary{cursor:pointer;color:#40545a;font-size:13px}
+details.more-options label{display:block;margin-top:8px}

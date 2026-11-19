@@ -17,9 +17,16 @@ func TestPresetsAreValidTemplates(t *testing.T) {
 			} else if strings.HasPrefix(name, "cycle") {
 				kind = KindCycle
 			}
-			// The item of the monthly summary is one line of a device, so
-			// it uses the device markers.
-			if err := Validate(kind, text, false); err != nil {
+			// A title is a single short line, so it is checked against the
+			// markers a title accepts; the milestone title may name the
+			// number of devices the message covers.
+			var err error
+			if strings.HasSuffix(name, "_title") {
+				err = Validate(kind, text, true)
+			} else {
+				err = Validate(kind, text, false)
+			}
+			if err != nil {
 				t.Errorf("the preset %s of the format %s is not a valid template: %v", name, format, err)
 			}
 		}
@@ -55,18 +62,20 @@ func TestDefaultTitleForPicksTheMonthlyTitle(t *testing.T) {
 	}
 }
 
-// TestDefaultBodyForFallsBackToHTML checks that an unknown format still
-// gives a usable template.
-func TestDefaultBodyForFallsBackToHTML(t *testing.T) {
-	if DefaultBodyFor("nope", KindMilestone) != DefaultBodyFor(FormatHTML, KindMilestone) {
-		t.Error("expected an unknown format to fall back to html")
+// TestDefaultBodyForFallsBackToMarkdown checks that an unknown format still
+// gives a usable template. Markdown is the default of the program, so an
+// unknown value is treated as markdown instead of html.
+func TestDefaultBodyForFallsBackToMarkdown(t *testing.T) {
+	if DefaultBodyFor("nope", KindMilestone) != DefaultBodyFor(FormatMarkdown, KindMilestone) {
+		t.Error("expected an unknown format to fall back to markdown")
 	}
 }
 
-// TestNormalizeFormat checks the cleanup of a format.
+// TestNormalizeFormat checks the cleanup of a format. Markdown is the
+// default, because its messages render best in PushPlus.
 func TestNormalizeFormat(t *testing.T) {
-	if NormalizeFormat("") != FormatHTML {
-		t.Errorf("expected an empty format to fall back to html, got %q", NormalizeFormat(""))
+	if NormalizeFormat("") != FormatMarkdown {
+		t.Errorf("expected an empty format to fall back to markdown, got %q", NormalizeFormat(""))
 	}
 	if NormalizeFormat(" TXT ") != FormatTxt {
 		t.Errorf("expected the format to be cleaned up, got %q", NormalizeFormat(" TXT "))

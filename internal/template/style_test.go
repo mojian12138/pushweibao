@@ -104,10 +104,12 @@ func TestPresetBodyHasNoMarkerLeft(t *testing.T) {
 }
 
 // TestPresetHTMLLooksLikeACard checks that the html body is a card with a
-// title bar and a table, so that the message looks tidy on the phone.
+// title bar and the grouped list, so that the message looks tidy on the
+// phone. The list of devices is filled by the renderer, so the body holds
+// the marker it fills instead of a table of its own.
 func TestPresetHTMLLooksLikeACard(t *testing.T) {
 	body := DefaultBodyFor(FormatHTML, KindMilestone)
-	for _, w := range []string{"border-radius", "<table", "background:#197d77", "维保到期提醒"} {
+	for _, w := range []string{"border-radius", "{{milestone_items}}", "background:#197d77", "维保到期提醒"} {
 		if !strings.Contains(body, w) {
 			t.Errorf("the html body is missing %q", w)
 		}
@@ -120,19 +122,21 @@ func TestPresetHTMLLooksLikeACard(t *testing.T) {
 	}
 }
 
-// TestPresetMarkdownLooksLikeATable checks that the markdown body is a
-// table, so that the summary is easy to read.
+// TestPresetMarkdownLooksLikeATable checks that the markdown body carries
+// the grouped list and a title, so that the devices of the day are easy to
+// read. The table itself is laid out by the builder, so the body holds the
+// marker it fills.
 func TestPresetMarkdownLooksLikeATable(t *testing.T) {
 	body := DefaultBodyFor(FormatMarkdown, KindMilestone)
-	if !strings.Contains(body, "| :--- |") {
-		t.Errorf("the markdown body has no table: %q", body)
+	if !strings.Contains(body, "{{milestone_items}}") {
+		t.Errorf("the markdown body has no grouped list: %q", body)
 	}
 	if !strings.Contains(body, "## ") {
 		t.Errorf("the markdown body has no title: %q", body)
 	}
-	item := DefaultItemFor(FormatMarkdown)
+	item := DefaultMilestoneItemFor(FormatMarkdown)
 	if !strings.HasPrefix(strings.TrimSpace(item), "|") {
-		t.Errorf("the markdown item is not a table row: %q", item)
+		t.Errorf("the markdown milestone item is not a table row: %q", item)
 	}
 }
 

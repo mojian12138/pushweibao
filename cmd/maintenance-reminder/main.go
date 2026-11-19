@@ -173,7 +173,7 @@ func createAdmin(database interface {
 	if err != nil {
 		return err
 	}
-	_, err = database.Exec(`INSERT INTO users(username,password_hash,role,must_change_password) VALUES(?,?,'admin',0)`, username, hash)
+	_, err = database.Exec(`INSERT INTO users(username,password_hash,role,must_change_password) VALUES(?,?,'admin',1)`, username, hash)
 	return err
 }
 

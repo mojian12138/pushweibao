@@ -87,6 +87,7 @@ func (s *Server) createPushToken(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategorySystem, Action: "push_token_created", Message: "推送令牌已创建：" + token.Name, Detail: fmt.Sprintf("类型=%s 渠道=%s 启用=%t", token.Kind, token.Channel, token.Enabled), Actor: currentUser(r).Username, RefType: "push_token", RefID: id, IP: clientIP(r.Context())})
 	writeJSON(w, 201, envelope{OK: true, Data: token})
 }
 
@@ -119,6 +120,7 @@ func (s *Server) updatePushToken(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategorySystem, Action: "push_token_updated", Message: "推送令牌已更新：" + token.Name, Detail: fmt.Sprintf("类型=%s 渠道=%s 启用=%t", token.Kind, token.Channel, token.Enabled), Actor: currentUser(r).Username, RefType: "push_token", RefID: id, IP: clientIP(r.Context())})
 	ok(w, token)
 }
 
@@ -136,6 +138,7 @@ func (s *Server) deletePushToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "IN_USE", err.Error())
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategorySystem, Action: "push_token_deleted", Message: fmt.Sprintf("推送令牌已删除 #%d", id), Actor: currentUser(r).Username, RefType: "push_token", RefID: id, IP: clientIP(r.Context())})
 	ok(w, map[string]bool{"deleted": true})
 }
 
@@ -161,6 +164,7 @@ func (s *Server) setPushTokenEnabled(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategorySystem, Action: "push_token_enabled_changed", Message: fmt.Sprintf("推送令牌 #%d 启用状态=%t", id, req.Enabled), Actor: currentUser(r).Username, RefType: "push_token", RefID: id, IP: clientIP(r.Context())})
 	ok(w, map[string]bool{"enabled": req.Enabled})
 }
 
@@ -205,6 +209,7 @@ func (s *Server) testPushToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defaults := s.pushDefaults(r.Context())
+	globalToken := s.globalToken(r.Context())
 	msg := push.Message{
 		Token:       token.Token,
 		Title:       req.Title,
@@ -216,6 +221,9 @@ func (s *Server) testPushToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if token.Kind == push.KindGroup {
 		msg.Topic = token.TopicCode
+	}
+	if msg.Token == "" {
+		msg.Token = globalToken
 	}
 	res, err := push.NewClientWithTimeout(timeoutSeconds(defaults["timeout_seconds"])).Send(r.Context(), msg)
 	if err != nil {

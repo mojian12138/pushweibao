@@ -8,8 +8,9 @@ import (
 )
 
 // TestOpenUpgradesTheLegacyStrategies checks that a database of the first
-// release is moved to styled messages, so that an existing install sends
-// html without an edit of every strategy.
+// release is moved to the messages of the current release, so that an
+// existing install sends the grouped markdown messages without an edit of
+// every strategy.
 func TestOpenUpgradesTheLegacyStrategies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 	database, err := Open(path)
@@ -33,15 +34,23 @@ func TestOpenUpgradesTheLegacyStrategies(t *testing.T) {
 		if err = database.QueryRow(`SELECT format,template,title_template FROM strategies WHERE type=?`, kind).Scan(&format, &body, &title); err != nil {
 			t.Fatal(err)
 		}
-		if format != template.FormatHTML {
+		if format != template.FormatMarkdown {
 			t.Errorf("%s still has the format %q", kind, format)
 		}
-		if body != template.DefaultBodyFor(template.FormatHTML, kind) {
-			t.Errorf("%s did not get the html preset: %q", kind, body)
+		if body != template.DefaultBodyFor(template.FormatMarkdown, kind) {
+			t.Errorf("%s did not get the markdown preset: %q", kind, body)
 		}
 		if title == "" {
 			t.Errorf("%s got no title", kind)
 		}
+	}
+	// The summary is laid out by the item line of the current preset.
+	var item string
+	if err = database.QueryRow(`SELECT item_template FROM strategies WHERE type=?`, template.KindMonthly).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	if item != template.DefaultItemFor(template.FormatMarkdown) {
+		t.Errorf("the monthly summary did not get the item preset: %q", item)
 	}
 }
 
@@ -93,7 +102,7 @@ func TestOpenUpgradesOnlyOnce(t *testing.T) {
 	if err = database.QueryRow(`SELECT template FROM strategies WHERE type='milestone'`).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body != template.DefaultBodyFor(template.FormatHTML, template.KindMilestone) {
+	if body != template.DefaultBodyFor(template.FormatMarkdown, template.KindMilestone) {
 		t.Errorf("the legacy text survived a restart: %q", body)
 	}
 	// A text the user writes after the upgrade is not the legacy text, so a

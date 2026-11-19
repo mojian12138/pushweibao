@@ -11,33 +11,35 @@ import (
 // The three names are the ones PushPlus uses for its own templates, so the
 // format of a message can be handed to the API as it is.
 const (
-	// FormatHTML is a text with HTML tags. It is the default, because an
-	// empty message is then shown with the built-in HTML layout.
+	// FormatHTML is a text with HTML tags.
 	FormatHTML = "html"
 	// FormatTxt is a plain text. The line breaks are written with \n.
 	FormatTxt = "txt"
-	// FormatMarkdown is a text written in markdown.
+	// FormatMarkdown is a text written in markdown. It is the default,
+	// because a markdown message is shown with the cleanest layout.
 	FormatMarkdown = "markdown"
 )
 
 // Formats lists the supported formats, in the order the editor offers them.
-var Formats = []string{FormatHTML, FormatTxt, FormatMarkdown}
+// Markdown comes first, because it is the format the messages default to.
+var Formats = []string{FormatMarkdown, FormatHTML, FormatTxt}
 
 // NormalizeFormat cleans up a format and falls back to the default one.
+// Markdown is the default, because its messages render best in PushPlus.
 func NormalizeFormat(f string) string {
 	f = strings.ToLower(strings.TrimSpace(f))
 	switch f {
 	case FormatHTML, FormatTxt, FormatMarkdown:
 		return f
-	case "":
-		return FormatHTML
 	}
-	return f
+	return FormatMarkdown
 }
 
-// ValidFormat reports whether a format is one of the supported ones.
+// ValidFormat reports whether a format is one of the supported ones. The
+// value is matched as it came in, because NormalizeFormat folds anything
+// unknown into the default format.
 func ValidFormat(f string) bool {
-	switch NormalizeFormat(f) {
+	switch strings.ToLower(strings.TrimSpace(f)) {
 	case FormatHTML, FormatTxt, FormatMarkdown:
 		return true
 	}
@@ -62,9 +64,9 @@ func FormatHint(f string) string {
 	case FormatTxt:
 		return "纯文本内容，不转义 HTML，换行使用 \\n。"
 	case FormatMarkdown:
-		return "内容基于 Markdown 格式展示。"
+		return "内容基于 Markdown 格式展示，推荐使用。"
 	}
-	return "支持 HTML 文本。为空时默认使用 HTML 模板。"
+	return "支持 HTML 文本。"
 }
 
 // FormatTemplate returns the PushPlus template that belongs to a format.
@@ -93,7 +95,7 @@ var presetTitles = map[string][]string{
 		"【月度维保汇总】{{month}}",
 	},
 	FormatMarkdown: {
-		"【维保提醒】剩余 {{days}} 天",
+		"【维保提醒】剩余 {{days}} 天 · 共 {{count}} 台",
 		"【月度维保汇总】{{month}}",
 	},
 }
@@ -125,25 +127,17 @@ var presetBodies = map[string]map[string]string{
 	FormatHTML: {
 		KindMilestone: `<div style="border:1px solid #e3e8ea;border-radius:10px;overflow:hidden;font-size:14px;color:#33454b;">
 <div style="background:#197d77;color:#ffffff;padding:10px 14px;font-weight:bold;font-size:15px;">维保到期提醒</div>
-<table style="width:100%;border-collapse:collapse;">
-<tr><td style="padding:6px 14px;color:#6b7c82;width:88px;">项目</td><td style="padding:6px 14px;">{{project}}</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">客户</td><td style="padding:6px 14px;">{{customer}}</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">设备</td><td style="padding:6px 14px;">{{vendor}} {{model}}</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">SN</td><td style="padding:6px 14px;">{{sn}}</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">到期</td><td style="padding:6px 14px;">{{end}}</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">剩余</td><td style="padding:6px 14px;color:#d39837;font-weight:bold;">{{days}} 天</td></tr>
-<tr><td style="padding:6px 14px;color:#6b7c82;">负责人</td><td style="padding:6px 14px;">{{owner}}</td></tr>
-</table>
+<div style="padding:6px 14px;">
+{{milestone_items}}
+</div>
 <div style="background:#f5f8f8;padding:10px 14px;color:#197d77;font-weight:bold;">请及时联系客户办理续保。</div>
 </div>`,
 		KindMonthly: `<div style="border:1px solid #e3e8ea;border-radius:10px;overflow:hidden;font-size:14px;color:#33454b;">
 <div style="background:#197d77;color:#ffffff;padding:10px 14px;font-weight:bold;font-size:15px;">{{month}} 维保到期汇总</div>
 <div style="padding:12px 14px;">
 <div style="margin-bottom:10px;">本月共有 <span style="color:#d39837;font-weight:bold;">{{count}}</span> 台设备即将到期。</div>
-<table style="width:100%;border-collapse:collapse;font-size:13px;">
-<tr style="background:#f5f8f8;color:#6b7c82;"><th style="padding:6px 8px;text-align:left;">项目</th><th style="padding:6px 8px;text-align:left;">型号</th><th style="padding:6px 8px;text-align:left;">SN</th><th style="padding:6px 8px;text-align:left;">到期</th><th style="padding:6px 8px;text-align:left;">剩余</th><th style="padding:6px 8px;text-align:left;">负责人</th></tr>
-{{items}}
-</table>
+{{upcoming_section}}
+{{expired_section}}
 </div>
 </div>`,
 		KindCycle: `<div style="border:1px solid #e3e8ea;border-radius:10px;overflow:hidden;font-size:14px;color:#33454b;">
@@ -159,12 +153,26 @@ var presetBodies = map[string]map[string]string{
 </div>`,
 	},
 	FormatTxt: {
-		KindMilestone: "【维保到期提醒】\n项目：{{project}}\n客户：{{customer}}\n设备：{{vendor}} {{model}}\nSN：{{sn}}\n到期：{{end}}\n剩余：{{days}} 天\n负责人：{{owner}}\n\n请及时联系客户办理续保。",
-		KindMonthly:   "【{{month}} 维保到期汇总】\n本月共有 {{count}} 台设备即将到期。\n{{items}}",
+		KindMilestone: "【维保到期提醒】\n{{milestone_items}}\n\n请及时联系客户办理续保。",
+		KindMonthly:   "【{{month}} 维保到期汇总】\n本月共有 {{count}} 台设备即将到期。\n\n{{upcoming_section}}\n\n{{expired_section}}",
 		KindCycle:     "【周期维保提醒】\n项目：{{project}}\n设备：{{vendor}} {{model}}\nSN：{{sn}}\n剩余：{{days}} 天\n负责人：{{owner}}\n\n请及时办理续保。",
 	},
 	FormatMarkdown: {
 		KindMilestone: `## 📌 维保到期提醒
+
+{{milestone_items}}
+
+> 请及时联系客户办理续保。`,
+		KindMonthly: `## 📅 {{month}} 维保到期汇总
+
+本月共有 **{{count}}** 台设备即将到期。
+
+{{upcoming_section}}
+
+{{expired_section}}
+
+> 请及时核对设备状态，安排续保。`,
+		KindCycle: `## 🔁 周期维保提醒
 
 | 项目 | {{project}} |
 | :--- | :--- |
@@ -175,40 +183,35 @@ var presetBodies = map[string]map[string]string{
 | **剩余** | **{{days}} 天** |
 | 负责人 | {{owner}} |
 
-> 请及时联系客户办理续保。`,
-		KindMonthly: `## 📅 {{month}} 维保到期汇总
-
-本月共有 **{{count}}** 台设备即将到期。
-
-| 项目 | 型号 | SN | 到期 | 剩余 | 负责人 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-{{items}}`,
-		KindCycle: `## 🔁 周期维保提醒
-
-| 项目 | {{project}} |
-| :--- | :--- |
-| 设备 | {{vendor}} {{model}} |
-| SN | {{sn}} |
-| **剩余** | **{{days}} 天** |
-| 负责人 | {{owner}} |
-
 > 请及时办理续保。`,
 	},
 }
 
 // The ready-made layouts of one line of the monthly summary. The summary is
-// a list, so every format needs its own.
-//
-// The html row is a row of the table of the summary; the markdown row is a
-// row of the markdown table. Both are written so that they fit the body
-// above them.
+// a list, so every format needs its own. The markdown line is a row of the
+// table of the summary.
 var presetItems = map[string]string{
 	FormatHTML:     `<tr><td style="padding:5px 8px;border-top:1px solid #eef1f2;">{{project}}</td><td style="padding:5px 8px;border-top:1px solid #eef1f2;">{{model}}</td><td style="padding:5px 8px;border-top:1px solid #eef1f2;">{{sn}}</td><td style="padding:5px 8px;border-top:1px solid #eef1f2;">{{end}}</td><td style="padding:5px 8px;border-top:1px solid #eef1f2;color:#d39837;font-weight:bold;">{{days}} 天</td><td style="padding:5px 8px;border-top:1px solid #eef1f2;">{{owner}}</td></tr>`,
 	FormatTxt:      "项目：{{project}}｜型号：{{model}}｜SN：{{sn}}｜到期：{{end}}｜剩余：{{days}} 天｜负责人：{{owner}}",
 	FormatMarkdown: "| {{project}} | {{model}} | {{sn}} | {{end}} | **{{days}} 天** | {{owner}} |",
 }
 
+// DefaultMilestoneItemFor returns the layout of one device inside the
+// grouped list of a milestone message. The markdown layout keeps the
+// project and the device side by side, so that a list of devices stays
+// readable on the phone.
+func DefaultMilestoneItemFor(format string) string {
+	if item, ok := compactItemTemplates[NormalizeFormat(format)]; ok {
+		return item
+	}
+	return compactItemTemplates[FormatTxt]
+}
+
 // DefaultTitleFor returns the ready-made title of a format for a kind.
+//
+// The milestone title may carry {{days}} and {{count}}: they are filled
+// with the tier that fired and the number of devices in the message. A
+// title is shown by PushPlus as plain text, so it carries no markup.
 func DefaultTitleFor(format, kind string) string {
 	set := presetTitles[NormalizeFormat(format)]
 	if set == nil {

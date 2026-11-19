@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"maintenance-reminder/internal/template"
@@ -25,6 +24,16 @@ type previewRequest struct {
 	Format string `json:"format"`
 	// DeviceID selects the record used when the mode is "real".
 	DeviceID int64 `json:"device_id"`
+	// Horizon limits the summary of a monthly preview to the devices that
+	// run out inside so many days, the same way the monthly scan does.
+	Horizon int `json:"horizon_days"`
+	// Window is the width of the window of a milestone preview, in days.
+	// The tiers are drawn from the offsets of the strategy in the editor,
+	// so the preview carries them in this list.
+	Window int `json:"window_days"`
+	// Offsets are the tiers of the milestone preview, the ones the strategy
+	// fires on. An empty list falls back to the default tiers.
+	Offsets []int `json:"offsets"`
 }
 
 // previewResponse is the rendered preview.
@@ -50,6 +59,9 @@ type previewResponse struct {
 	// HTML is the message written as html, so that the preview shows the
 	// layout of the phone instead of the source of the message.
 	HTML string `json:"html"`
+	// WindowCount reports the number of devices the window of a milestone
+	// preview holds, so the editor can show what the message covers.
+	WindowCount int `json:"window_count,omitempty"`
 }
 
 // previewStrategy renders a strategy template with real or sample data.
@@ -96,13 +108,28 @@ func (s *Server) previewStrategy(w http.ResponseWriter, r *http.Request) {
 		if req.Item != "" {
 			out.Item = template.SampleItem(req.Item)
 		}
+		// The grouped list is laid out with the sample device in the format
+		// of the message, so that the preview shows the layout the phone
+		// will show.
+		if kind == template.KindMilestone {
+			content := template.SampleWithout(kind, req.Content, "milestone_items")
+			out.Content = template.RenderMilestone(content, template.SampleMilestoneItems(out.Format), template.SampleDevice(), 30)
+		}
 		respondPreview(w, out)
 		return
 	}
 
 	// The real mode renders with a record from the database.
 	if kind == template.KindMonthly {
-		summary, err := s.buildPreviewSummary(r, req.Item)
+		// The summary covers the horizon of the strategy, so the preview
+		// filters the devices the same way the monthly scan does. A
+		// preview request that does not name a horizon uses 90 days, the
+		// default of the strategies.
+		horizon := req.Horizon
+		if horizon <= 0 {
+			horizon = 90
+		}
+		summary, err := s.buildPreviewSummary(r, req.Item, out.Format, horizon)
 		if err != nil {
 			fail(w, 500, "INTERNAL", err.Error())
 			return
@@ -122,7 +149,18 @@ func (s *Server) previewStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.UsedDeviceID = id
-	out.Content = template.Render(req.Content, d, days)
+	// The grouped list of a milestone message is filled with the devices
+	// of the window, grouped and sorted the way the scan lays them out, so
+	// the preview shows the message the strategy will really send. A
+	// request that carries a device id previews that one device, as the
+	// test dialog of a device does.
+	if kind == template.KindMilestone && template.KnownMarker(req.Content, "milestone_items") {
+		items, repDevice, repDays, count := s.buildMilestoneWindowFor(r, req, out.Format)
+		out.Content = template.RenderMilestone(req.Content, items, repDevice, repDays)
+		out.WindowCount = count
+	} else {
+		out.Content = template.Render(req.Content, d, days)
+	}
 	out.Title = template.RenderTitle(req.Title, d, days)
 	if req.Item != "" {
 		out.Item = template.RenderItem(req.Item, d, days)
@@ -178,7 +216,11 @@ func (s *Server) previewDevice(w http.ResponseWriter, r *http.Request) {
 	if req.Title != "" {
 		out.Title = template.RenderTitle(req.Title, d, days)
 	}
-	out.Content = template.Render(req.Content, d, days)
+	if template.KnownMarker(req.Content, "milestone_items") {
+		out.Content = template.RenderMilestone(req.Content, template.MilestoneItemsForOne(out.Format, d, days), d, days)
+	} else {
+		out.Content = template.Render(req.Content, d, days)
+	}
 	if req.Item != "" {
 		out.Item = template.RenderItem(req.Item, d, days)
 	}
@@ -213,8 +255,13 @@ func (s *Server) previewToken(w http.ResponseWriter, r *http.Request) {
 		out.Mode = "sample"
 	}
 	if out.Mode == "sample" {
-		out.Content = template.Sample(template.KindMilestone, req.Content)
+		content := template.SampleWithout(template.KindMilestone, req.Content, "milestone_items")
 		out.Title = template.SampleTitle(req.Title)
+		if template.KnownMarker(content, "milestone_items") {
+			out.Content = template.RenderMilestone(content, template.SampleMilestoneItems(out.Format), template.SampleDevice(), 30)
+		} else {
+			out.Content = template.Sample(template.KindMilestone, req.Content)
+		}
 		respondPreview(w, out)
 		return
 	}
@@ -225,7 +272,12 @@ func (s *Server) previewToken(w http.ResponseWriter, r *http.Request) {
 	}
 	out.UsedDeviceID = id
 	out.Content = template.Render(req.Content, d, days)
-	out.Title = template.RenderTitle(req.Title, d, days)
+	if template.KnownMarker(req.Content, "milestone_items") {
+		out.Content = template.RenderMilestone(req.Content, template.MilestoneItemsForOne(out.Format, d, days), d, days)
+	}
+	if req.Title != "" {
+		out.Title = template.RenderTitle(req.Title, d, days)
+	}
 	respondPreview(w, out)
 }
 
@@ -254,21 +306,87 @@ func (s *Server) loadPreviewDevice(r *http.Request, id int64) (template.Device, 
 	return d, days, id, nil
 }
 
-// buildPreviewSummary builds the summary of the monthly preview from the
-// devices that are close to expiring. The item template is the one of the
-// strategy, so that the preview shows the real layout.
-func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate string) (template.Summary, error) {
+// buildMilestoneWindow lays the devices of the window out the way the scan
+// does: every device that still runs inside the widest tier goes into the
+// list, grouped and sorted by urgency. A request that names a device
+// previews that device alone. The representative device is the most urgent
+// one of the window, so the markers of a single device name it.
+func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays int, offsets []int) (string, template.Device, int, int) {
+	if len(offsets) == 0 {
+		offsets = template.DefaultOffsets
+	}
+	widest := windowDays
+	if widest <= 0 {
+		for _, o := range offsets {
+			if o > widest {
+				widest = o
+			}
+		}
+	}
+	rows, e := s.db.Query(`SELECT d.id,p.name,p.customer,COALESCE(p.contact,''),d.vendor,d.model,d.serial_number,d.maintenance_start,d.maintenance_end,d.notes,COALESCE(NULLIF(d.owner,''),p.owner)
+		FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.status='active' ORDER BY d.maintenance_end LIMIT 500`)
+	if e != nil {
+		return "", template.Device{}, 0, 0
+	}
+	defer rows.Close()
+	hits := []template.MilestoneHit{}
+	for rows.Next() {
+		var d template.Device
+		var id int64
+		var end string
+		if e = rows.Scan(&id, &d.Project, &d.Customer, &d.Contact, &d.Vendor, &d.Model, &d.SN, &d.Start, &end, &d.Notes, &d.Owner); e != nil {
+			continue
+		}
+		d.End = end
+		if deviceID > 0 && id != deviceID {
+			continue
+		}
+		days := s.daysUntil(end)
+		if days < 0 || days > widest {
+			continue
+		}
+		hits = append(hits, template.MilestoneHit{Device: d, ID: id, Days: days})
+	}
+	if len(hits) == 0 {
+		// A window without devices falls back to the closest device, so
+		// the preview still shows the layout of the message.
+		if d, days, _, err := s.loadPreviewDevice(rDummy(), 0); err == nil {
+			return template.BuildMilestoneItems(format, offsets, []template.MilestoneHit{{Device: d, Days: days}}), d, days, 0
+		}
+		return "", template.Device{}, 0, 0
+	}
+	rep := hits[0]
+	for _, h := range hits[1:] {
+		if h.Days < rep.Days {
+			rep = h
+		}
+	}
+	return template.BuildMilestoneItems(format, offsets, hits), rep.Device, rep.Days, len(hits)
+}
+
+// rDummy is the request the fallback of the window builder hands on, so
+// that the loader can pick the closest device on its own.
+func rDummy() *http.Request { return nil }
+
+// buildMilestoneWindowFor lays the devices of the window out for a preview
+// request, with the tiers the request carries.
+func (s *Server) buildMilestoneWindowFor(r *http.Request, req previewRequest, format string) (string, template.Device, int, int) {
+	return s.buildMilestoneWindow(format, req.DeviceID, req.Window, req.Offsets)
+}
+func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format string, horizon int) (template.Summary, error) {
 	if itemTemplate == "" {
 		itemTemplate = DefaultItemTemplate
 	}
 	out := template.Summary{Month: s.currentMonth()}
 	rows, e := s.db.Query(`SELECT p.name,p.customer,COALESCE(p.contact,''),d.vendor,d.model,d.serial_number,d.maintenance_end,d.notes,COALESCE(NULLIF(d.owner,''),p.owner)
-		FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.status='active' ORDER BY d.maintenance_end LIMIT 50`)
+		FROM devices d JOIN projects p ON p.id=d.project_id
+		WHERE d.status='active' AND (d.maintenance_end<date(?) OR d.maintenance_end<=date(?, '+' || ? || ' day'))
+		ORDER BY d.maintenance_end LIMIT 50`, s.today(), s.today(), horizon)
 	if e != nil {
 		return out, e
 	}
 	defer rows.Close()
-	var upcoming, expired strings.Builder
+	var summaryRows []template.SummaryRow
 	for rows.Next() {
 		var d template.Device
 		var end string
@@ -281,17 +399,20 @@ func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate string) (temp
 			out.Device = d
 			out.Days = days
 		}
-		line := template.RenderItem(itemTemplate, d, days)
-		if days < 0 {
-			expired.WriteString(line)
+		summaryRows = append(summaryRows, template.SummaryRow{Device: d, Days: days})
+	}
+	// The lines of the {{items}} and {{expired}} markers and the blocks of
+	// the section markers are laid out by the same builder, so both show
+	// the devices in the order of their urgency.
+	out.Items, out.Expired = template.BuildSummaryLines(itemTemplate, summaryRows)
+	out.UpcomingSection, out.ExpiredSection = template.BuildSummaryBlocks(format, itemTemplate, summaryRows)
+	for _, r := range summaryRows {
+		if r.Days < 0 {
 			out.ExpiredCount++
 		} else {
-			upcoming.WriteString(line)
 			out.Count++
 		}
 	}
-	out.Items = upcoming.String()
-	out.Expired = expired.String()
 	return out, nil
 }
 

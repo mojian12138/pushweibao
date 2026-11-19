@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -14,14 +15,26 @@ import (
 	"maintenance-reminder/internal/importexport"
 	"maintenance-reminder/internal/push"
 	"maintenance-reminder/internal/systemlog"
+	"maintenance-reminder/internal/template"
 )
 
 func uploadedFile(r *http.Request) (multipart.File, error) {
+	const maxUploadBytes = 32 << 20
+	r.Body = http.MaxBytesReader(nil, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(16 << 20); err != nil {
 		return nil, err
 	}
 	f, _, err := r.FormFile("file")
 	return f, err
+}
+
+func failUpload(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		fail(w, http.StatusRequestEntityTooLarge, "IMPORT_TOO_LARGE", "Excel 文件超过 32 MB 限制")
+		return
+	}
+	fail(w, http.StatusBadRequest, "IMPORT_FILE", "请选择有效的 Excel 文件")
 }
 func (s *Server) deviceTemplate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -69,7 +82,7 @@ func (s *Server) exportProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) importProjects(w http.ResponseWriter, r *http.Request) {
 	f, e := uploadedFile(r)
 	if e != nil {
-		fail(w, 400, "IMPORT_FILE", "请选择 Excel 文件")
+		failUpload(w, e)
 		return
 	}
 	defer f.Close()
@@ -100,12 +113,13 @@ func (s *Server) importProjects(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, e)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategoryData, Action: "projects_imported", Message: fmt.Sprintf("项目导入完成：成功 %d 条，失败 %d 条", result.Imported, len(result.Errors)), Detail: importErrorSummary(result.Errors), Actor: currentUser(r).Username, IP: clientIP(r.Context())})
 	ok(w, result)
 }
 func (s *Server) importDevices(w http.ResponseWriter, r *http.Request) {
 	f, e := uploadedFile(r)
 	if e != nil {
-		fail(w, 400, "IMPORT_FILE", "请选择 Excel 文件")
+		failUpload(w, e)
 		return
 	}
 	defer f.Close()
@@ -144,6 +158,7 @@ func (s *Server) importDevices(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, e)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategoryData, Action: "devices_imported", Message: fmt.Sprintf("设备导入完成：成功 %d 条，失败 %d 条", result.Imported, len(result.Errors)), Detail: importErrorSummary(result.Errors), Actor: currentUser(r).Username, IP: clientIP(r.Context())})
 	ok(w, result)
 }
 
@@ -195,7 +210,7 @@ func (s *Server) importProjectDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	f, e := uploadedFile(r)
 	if e != nil {
-		fail(w, 400, "IMPORT_FILE", "请选择 Excel 文件")
+		failUpload(w, e)
 		return
 	}
 	defer f.Close()
@@ -227,6 +242,7 @@ func (s *Server) importProjectDevices(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, e)
 		return
 	}
+	s.log().Record(systemlog.Entry{Level: systemlog.LevelInfo, Category: systemlog.CategoryData, Action: "project_devices_imported", Message: fmt.Sprintf("项目设备导入完成：项目 %d，成功 %d 条，失败 %d 条", id, result.Imported, len(result.Errors)), Detail: importErrorSummary(result.Errors), Actor: currentUser(r).Username, RefType: "project", RefID: id, IP: clientIP(r.Context())})
 	ok(w, result)
 }
 
@@ -249,14 +265,15 @@ func (s *Server) sendTestPush(ctx context.Context, token push.Token, title, cont
 		Title:   title,
 		Content: content,
 		// The format of the message wins over the template of the token, so
-		// that a message written in markdown is not sent as html.
-		Template:    firstNonEmpty(format, token.Template, defaults["template"], "html"),
+		// that a message written in markdown is not sent as html. Markdown
+		// is the format the messages default to.
+		Template:    firstNonEmpty(format, token.Template, defaults["template"], template.FormatMarkdown),
 		Channel:     firstNonEmpty(token.Channel, defaults["channel"], "wechat"),
 		Option:      token.Option,
 		CallbackURL: firstNonEmpty(token.CallbackURL, defaults["callback_url"]),
 	}
 	if out.Token == "" {
-		out.Token = s.cfg.PushPlusToken
+		out.Token = s.globalToken(ctx)
 	}
 	if token.Kind == push.KindGroup {
 		out.Topic = token.TopicCode
@@ -469,4 +486,17 @@ func (s *Server) testDraftStrategyPush(w http.ResponseWriter, r *http.Request) {
 		IP:       clientIP(r.Context()),
 	})
 	ok(w, map[string]any{"sent": true, "msg_id": msgID})
+}
+
+func importErrorSummary(errors []importexport.RowError) string {
+	const maxDetails = 10
+	var summary strings.Builder
+	for i, item := range errors {
+		if i == maxDetails {
+			fmt.Fprintf(&summary, "\n其余 %d 条错误未写入日志", len(errors)-maxDetails)
+			break
+		}
+		fmt.Fprintf(&summary, "第 %d 行：%s\n", item.Number, item.Message)
+	}
+	return strings.TrimSpace(summary.String())
 }

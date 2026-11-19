@@ -94,25 +94,80 @@ func migrate(database *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		statements := strings.Split(string(content), ";")
-		for _, statement := range statements {
-			if strings.TrimSpace(statement) == "" {
+		for i, statement := range splitSQLStatements(string(content)) {
+			statement = strings.TrimSpace(statement)
+			if statement == "" {
 				continue
 			}
 			if _, err = tx.Exec(statement); err != nil {
-				break
+				_ = tx.Rollback()
+				return fmt.Errorf("migration %s statement %d: %w", name, i+1, err)
 			}
 		}
-		if err == nil {
-			_, err = tx.Exec(`INSERT INTO schema_migrations(name) VALUES(?)`, filepath.Base(name))
-		}
-		if err != nil {
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(name) VALUES(?)`, filepath.Base(name)); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("migration %s: %w", name, err)
+			return fmt.Errorf("record migration %s: %w", name, err)
 		}
 		if err = tx.Commit(); err != nil {
-			return err
+			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func splitSQLStatements(source string) []string {
+	statements := make([]string, 0)
+	start := 0
+	var quote byte
+	lineComment, blockComment := false, false
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		if lineComment {
+			if c == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if c == '*' && i+1 < len(source) && source[i+1] == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if c == quote {
+				if i+1 < len(source) && source[i+1] == quote {
+					i++
+					continue
+				}
+				quote = 0
+			} else if c == '\\' && i+1 < len(source) {
+				i++
+			}
+			continue
+		}
+		if c == '-' && i+1 < len(source) && source[i+1] == '-' {
+			lineComment = true
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(source) && source[i+1] == '*' {
+			blockComment = true
+			i++
+			continue
+		}
+		if c == '\'' || c == '"' || c == '`' {
+			quote = c
+			continue
+		}
+		if c == ';' {
+			statements = append(statements, source[start:i])
+			start = i + 1
+		}
+	}
+	if tail := strings.TrimSpace(source[start:]); tail != "" {
+		statements = append(statements, source[start:])
+	}
+	return statements
 }

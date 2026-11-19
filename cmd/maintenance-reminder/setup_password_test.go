@@ -84,11 +84,15 @@ func TestFirstRunWritesConfigAndSingleAdmin(t *testing.T) {
 		t.Fatalf("admin count = %d", admins)
 	}
 	var hash string
-	if err = database.QueryRow(`SELECT password_hash FROM users WHERE role='admin'`).Scan(&hash); err != nil {
+	var mustChange int
+	if err = database.QueryRow(`SELECT password_hash,must_change_password FROM users WHERE role='admin'`).Scan(&hash, &mustChange); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(hash, "longenoughpassword") {
 		t.Fatal("plaintext password was stored")
+	}
+	if mustChange != 1 {
+		t.Fatalf("initial admin must_change_password=%d, want 1", mustChange)
 	}
 }
 

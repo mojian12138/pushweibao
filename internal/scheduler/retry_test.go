@@ -26,34 +26,36 @@ func queueOutbox(t *testing.T, s *Scheduler, attempts int) int64 {
 
 func TestDeliverStopsAtTheRetryLimit(t *testing.T) {
 	s := newScheduler(t)
-	// The limit is low so the test does not have to wait for the backoff.
 	if _, err := s.DB.Exec(`INSERT INTO settings(key,value) VALUES('push.retry_limit','2') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
 		t.Fatalf("set retry limit: %v", err)
 	}
-
-	// The endpoint always fails, so every attempt is recorded.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("message at the retry limit must not be sent again")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":999,"msg":"服务端验证错误","data":"测试失败"}`))
 	}))
 	defer server.Close()
 	s.Push = &push.Client{HTTP: server.Client(), Endpoint: server.URL}
-
 	id := queueOutbox(t, s, 2)
 	if err := s.Deliver(context.Background()); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
-
 	var status, lastError string
 	var attempts int
 	if err := s.DB.QueryRow(`SELECT status,attempts,last_error FROM notification_outbox WHERE id=?`, id).Scan(&status, &attempts, &lastError); err != nil {
-		t.Fatalf("read outbox: %v", err)
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 2 || !strings.Contains(lastError, "重试上限") {
+		t.Fatalf("terminal retry state = %q, %d, %q", status, attempts, lastError)
+	}
+	if err := s.Deliver(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`SELECT attempts FROM notification_outbox WHERE id=?`, id).Scan(&attempts); err != nil {
+		t.Fatal(err)
 	}
 	if attempts != 2 {
-		t.Errorf("expected the message to be left alone at 2 attempts, got %d", attempts)
-	}
-	if lastError == "" {
-		t.Error("expected the retry limit to be recorded as the error")
+		t.Fatalf("retry limit was exceeded: %d", attempts)
 	}
 }
 
