@@ -120,6 +120,20 @@ async function strategies(){
 // them.
 const WEEKDAYS=[[0,'周日'],[1,'周一'],[2,'周二'],[3,'周三'],[4,'周四'],[5,'周五'],[6,'周六']];
 
+// humanSchedule describes the visual controls immediately, before the
+// server returns the calculated next fire time.
+function humanSchedule(mode,form){
+  const hour=String(Number(formValue(form,'daily_hour')??formValue(form,'weekly_hour')??formValue(form,'monthly_hour')??0)).padStart(2,'0');
+  const minute=String(Number(formValue(form,'daily_min')??formValue(form,'weekly_min')??formValue(form,'monthly_min')??0)).padStart(2,'0');
+  if(mode==='daily')return `每天 ${hour}:${minute}`;
+  if(mode==='weekly'){
+    const day=Number(formValue(form,'weekly_day'));
+    return `每${WEEKDAYS.find(([n])=>n===day)?.[1]||'周一'} ${hour}:${minute}`;
+  }
+  if(mode==='monthly')return `每月 ${Number(formValue(form,'monthly_day2'))||1} 日 ${hour}:${minute}`;
+  return '';
+}
+
 // parseCronToUI takes an expression apart into the visual fields. The
 // common single-value forms come back as daily, weekly or monthly; a
 // schedule the controls cannot express comes back as custom, with the
@@ -143,14 +157,26 @@ const hourOptions=()=>Array.from({length:24},(_,h)=>`<option value="${h}" >${Str
 const minuteOptions=()=>Array.from({length:60},(_,m)=>`<option value="${m}">${String(m).padStart(2,'0')} 分</option>`).join('');
 const picked=(list,v)=>list.replace(/value="(\d+)"/g,(m,num)=>`value="${num}" ${Number(v)===Number(num)?'selected':''}`);
 
-// uiToCron builds the expression from the visual fields of a mode. The
-// fields are the select pairs: daily_hour/daily_min and so on.
-function uiToCron(mode,f){
-  const nm=v=>String(Number(v)||0);
-  if(mode==='daily')return `${nm(f.daily_min)} ${nm(f.daily_hour)} * * *`;
-  if(mode==='weekly')return `${nm(f.weekly_min)} ${nm(f.weekly_hour)} * * ${Number(f.weekly_day)||1}`;
-  if(mode==='monthly')return `${nm(f.monthly_min)} ${nm(f.monthly_hour)} ${Math.min(Math.max(Number(f.monthly_day2)||1,1),28)} * *`;
-  return f.cron_expr||'';
+// formValue reads a control explicitly through its value, whether the
+// caller passes the form itself or its elements collection.
+function formValue(form,name){
+  const field=form?.elements?.namedItem?.(name)||form?.[name]||form?.elements?.[name];
+  return field&&typeof field==='object'&&'value' in field?field.value:field;
+}
+
+// uiToCron accepts either a form.elements collection or a plain object.
+// Form controls must be read through .value; converting a select element
+// itself to a number silently yielded 00:00 for every selected time.
+function uiToCron(mode,formOrValues){
+  const value=name=>formValue(formOrValues,name);
+  const numeric=(name,fallback=0)=>{
+    const n=Number(value(name));
+    return Number.isFinite(n)?n:fallback;
+  };
+  if(mode==='daily')return `${numeric('daily_min')} ${numeric('daily_hour')} * * *`;
+  if(mode==='weekly')return `${numeric('weekly_min')} ${numeric('weekly_hour')} * * ${numeric('weekly_day',1)}`;
+  if(mode==='monthly')return `${numeric('monthly_min')} ${numeric('monthly_hour')} ${Math.min(Math.max(numeric('monthly_day2',1),1),28)} * *`;
+  return String(value('cron_expr')||'');
 }
 
 // initialTriggerMode decides which visual mode an edited strategy opens
@@ -229,7 +255,10 @@ async function strategyEditorModal(x={}){
   const form=wrap.querySelector('form');
   const box=wrap.querySelector('.template-preview-box');
 
-  // The fields of the chosen mode show, the others hide.
+  // The fields of the chosen mode show. Update the human-readable schedule
+  // synchronously from the controls first; an older describe response must
+  // never overwrite the time the user just selected.
+  let triggerRequest=0;
   const refreshTrigger=async()=>{
     const mode=form.elements.trigger_mode.value;
     wrap.querySelectorAll('.tf').forEach(el=>el.hidden=!el.classList.contains('tf-'+mode));
@@ -239,21 +268,22 @@ async function strategyEditorModal(x={}){
     const hint=wrap.querySelector('.trigger-hint');
     if(mode==='window'){
       hint.textContent='每天检查一次：设备剩余天数落进哪个节点，就按哪一档推送该档内的全部设备。';
-    }else if(mode==='custom'){
-      const expr=form.elements.cron_expr.value.trim();
-      if(!expr){hint.textContent='';return;}
-      try{
-        const r=await api('/cron-describe',{method:'POST',body:JSON.stringify({expr})});
-        hint.textContent='推送时间：'+r.data.describe+'，下次 '+r.data.next;
-      }catch(e){hint.textContent=e.message;}
-    }else if(mode==='cycle'){
+      return;
+    }
+    if(mode==='cycle'){
       hint.textContent=`到期前 ${form.elements.cycle_threshold.value} 天内，每 ${form.elements.cycle_interval.value} 天提醒一次。`;
-    }else{
-      const cron=uiToCron(mode,form.elements);
-      try{
-        const r=await api('/cron-describe',{method:'POST',body:JSON.stringify({expr:cron})});
-        hint.textContent='推送时间：'+r.data.describe+'，下次 '+r.data.next;
-      }catch(e){hint.textContent='';}
+      return;
+    }
+    const expr=mode==='custom'?String(form.elements.cron_expr.value||'').trim():uiToCron(mode,form.elements);
+    if(!expr){hint.textContent='请选择具体时间';return;}
+    const request=++triggerRequest;
+    hint.textContent=`已选计划：${mode==='custom'?expr:humanSchedule(mode,form.elements)}；正在确认下次推送时间…`;
+    try{
+      const r=await api('/cron-describe',{method:'POST',body:JSON.stringify({expr})});
+      if(request!==triggerRequest)return;
+      hint.textContent=`推送时间：${r.data.describe}，下次 ${r.data.next}`;
+    }catch(e){
+      if(request===triggerRequest)hint.textContent=`计划无效：${e.message}`;
     }
   };
   form.elements.trigger_mode.onchange=refreshTrigger;

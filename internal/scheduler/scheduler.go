@@ -68,8 +68,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// Cron expressions have minute precision. Check at least once a minute
+	// and align checks to wall-clock minute boundaries; a ticker started at
+	// process boot would drift and could miss a schedule such as 16:58.
+	if interval > time.Minute {
+		interval = time.Minute
+	}
 	for {
 		if err := s.Scan(ctx); err != nil {
 			log.Printf("reminder scan: %v", err)
@@ -77,10 +81,18 @@ func (s *Scheduler) Run(ctx context.Context) {
 		if err := s.Deliver(ctx); err != nil {
 			log.Printf("notification delivery: %v", err)
 		}
+		now := time.Now()
+		untilBoundary := now.Truncate(time.Minute).Add(time.Minute).Sub(now)
+		delay := interval
+		if untilBoundary < delay {
+			delay = untilBoundary
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
