@@ -159,8 +159,9 @@ const picked=(list,v)=>list.replace(/value="(\d+)"/g,(m,num)=>`value="${num}" ${
 
 // formValue reads a control explicitly through its value, whether the
 // caller passes the form itself or its elements collection.
-function formValue(form,name){
-  const field=form?.elements?.namedItem?.(name)||form?.[name]||form?.elements?.[name];
+function formValue(formOrElements,name){
+  const collection=formOrElements?.elements||formOrElements;
+  const field=collection?.namedItem?.(name)||collection?.[name]||formOrElements?.[name];
   return field&&typeof field==='object'&&'value' in field?field.value:field;
 }
 
