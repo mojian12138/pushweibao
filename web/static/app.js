@@ -53,6 +53,37 @@ function tokenTable(tokens){return table(['名称','类型','令牌值','群组�
 async function tokenModal(opt,t={}){const kinds=[['user','用户令牌'],['message','消息令牌'],['group','群组令牌']];modal(t.id?'编辑令牌':'新增令牌',[{name:'name',label:'令牌名称',required:true},{name:'kind',label:'令牌类型',type:'select',options:kinds},{name:'token',label:t.id?'令牌值（留空保持不变）':'令牌值',type:'password',required:!t.id},{name:'topic_code',label:'群组编码（群组令牌必填）'},{name:'channel',label:'发送渠道',type:'select',options:opt.channels.map(c=>[c.value,c.label+(c.free?'':'（收费）')])},{name:'template',label:'消息模板',type:'select',options:opt.templates.map(x=>[x,x])},{name:'option',label:'渠道配置参数 option'},{name:'callback_url',label:'回调地址 callbackUrl'},{name:'expires_at',label:'到期时间',type:'date'},{name:'note',label:'备注'},{name:'enabled',label:'状态',type:'select',options:[[true,'启用'],[false,'停用']]}],{...t,enabled:String(t.enabled??true),channel:t.channel||'wechat',template:t.template||'markdown',kind:t.kind||'user'},v=>{v.enabled=String(v.enabled)==='true';return action('/push-tokens'+(t.id?'/'+t.id:''),t.id?'PUT':'POST',v)})}
 async function userModal(tokens=[],u={}){const opts=[['','未绑定（使用策略或默认令牌）'],...tokens.map(t=>[t.id,t.name+(t.enabled?'':'（已停用）')])];modal(u.id?'管理账号':'新增账号',[{name:'username',label:'账号',required:!u.id},{name:'role',label:'角色',type:'select',options:[['admin','管理员'],['viewer','只读老板']]},{name:'password',label:u.id?'重置密码（留空不改）':'初始密码（至少12位）',type:'password',required:!u.id},{name:'push_token_id',label:'绑定推送令牌',type:'select',options:opts},{name:'active',label:'账号状态',type:'select',options:[[true,'启用'],[false,'停用']]}],{...u,active:String(u.active??true),push_token_id:String(u.push_token_id??'')},v=>{v.active=String(v.active)==='true';v.push_token_id=v.push_token_id?Number(v.push_token_id):0;const id=u.id;return action('/users'+(id?'/'+id:''),id?'PUT':'POST',v)})}
 function uploadFile(url){const input=document.createElement('input');input.type='file';input.accept='.xlsx';input.onchange=async()=>{const f=input.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);try{const res=await fetch('/api'+url,{method:'POST',headers:{'X-CSRF-Token':state.csrf},body:fd});const x=await res.json();if(!res.ok)throw Error(x.error?.message||'导入失败');const errors=(x.data.errors||[]).map(e=>`第 ${e.row} 行：${e.message}`).join('\n');alert(`导入完成：成功 ${x.data.imported} 条${errors?'\n\n失败明细：\n'+errors:''}`);render()}catch(e){alert(e.message)}};input.click()}
-async function download(path,name){try{const blob=await api(path);const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name||path.split('/').pop();document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){alert(e.message)}}
+// download saves a file the server produced. It reads the response itself
+// instead of going through api(): api() turns a json answer into an object,
+// and a download needs the bytes. The backup file is json, so this is the
+// difference between saving the file and failing on createObjectURL.
+async function download(path,name){
+  try{
+    const res=await fetch('/api'+path,{credentials:'same-origin'});
+    if(!res.ok){
+      let message='下载失败：'+res.status;
+      if((res.headers.get('content-type')||'').includes('json')){
+        try{const x=await res.json();message=x.error?.message||message}catch{}
+      }
+      throw Error(message);
+    }
+    const blob=await res.blob();
+    // The server knows the file by its date, so its name wins over the
+    // last part of the path.
+    const disposition=res.headers.get('Content-Disposition')||'';
+    const utfName=/filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    const plainName=/filename="?([^";]+)"?/i.exec(disposition);
+    let suggested='';
+    try{suggested=utfName?decodeURIComponent(utfName[1]):(plainName?plainName[1]:'')}catch{}
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=name||suggested||path.split('/').pop();
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(e){alert(e.message)}
+}
 async function render(){if(!state.user){login();return}if(state.user.must_change_password){shell(`<h1>首次登录请修改密码</h1><form id="pw" class="form" style="max-width:420px"><label>当前密码<input name="current_password" type="password" required></label><label>新密码（至少12位）<input name="new_password" type="password" minlength="12" required></label><button>更新密码</button></form>`);document.querySelector('#pw').onsubmit=async e=>{e.preventDefault();try{await action('/password','POST',Object.fromEntries(new FormData(e.currentTarget)));state.user.must_change_password=false;render()}catch(e){alert(e.message)}};return}try{switch(state.page){case'projects':return await projects();case'devices':return await devices();case'strategies':return await strategies();case'logs':return await logs();case'settings':return await settings();default:return await dashboard()}}catch{}}
 (async()=>{try{const r=await fetch('/api/me');if(r.ok){const x=await r.json();state.user=x.data;state.csrf=x.data.csrf_token}}catch{}render()})();

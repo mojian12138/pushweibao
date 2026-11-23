@@ -63,8 +63,10 @@ function formatBytes(n) {
 // wireDataPanel attaches the buttons of the panel. It is called after the
 // settings page has been drawn.
 function wireDataPanel(onRestored) {
+  // The server names the file after the moment of the backup, so the name
+  // carries the date instead of a fixed "backup.json".
   const exportButton = document.querySelector('#dataExport');
-  if (exportButton) exportButton.onclick = () => download('/backup', '维保备份-' + timestamp() + '.json');
+  if (exportButton) exportButton.onclick = () => download('/backup');
 
   const importButton = document.querySelector('#dataImport');
   if (importButton) importButton.onclick = () => pickBackupFile(onRestored);
@@ -72,13 +74,6 @@ function wireDataPanel(onRestored) {
   document.querySelectorAll('.safetyDownload').forEach(button => {
     button.onclick = () => download('/backup/safety/' + encodeURIComponent(button.dataset.name), button.dataset.name);
   });
-}
-
-// timestamp is the local time in a form that sorts well in a file name.
-function timestamp() {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 // pickBackupFile asks for a file, shows what it holds and only then restores

@@ -79,3 +79,60 @@ func TestEditorAssetsAreServed(t *testing.T) {
 		t.Error("index.html does not load logs.js")
 	}
 }
+
+// TestDownloadReadsTheResponseBody guards the download helper. It used to go
+// through api(), which turns a json answer into an object, so saving the
+// backup file failed with "Failed to execute 'createObjectURL' on 'URL'".
+// A download has to take the bytes.
+func TestDownloadReadsTheResponseBody(t *testing.T) {
+	server, _ := newTestServer(t)
+	res, err := http.Get(server.URL + "/static/app.js")
+	if err != nil {
+		t.Fatalf("fetch app.js: %v", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	js := string(body)
+	start := strings.Index(js, "async function download(")
+	if start < 0 {
+		t.Fatal("app.js has no download helper")
+	}
+	end := strings.Index(js[start:], "\n}")
+	if end < 0 {
+		t.Fatal("the download helper has no end")
+	}
+	helper := js[start : start+end]
+	if !strings.Contains(helper, "res.blob()") {
+		t.Error("download() does not read the response as a blob")
+	}
+	if strings.Contains(helper, "await api(") {
+		t.Error("download() goes through api(), which parses a json answer instead of saving it")
+	}
+	if !strings.Contains(helper, "Content-Disposition") {
+		t.Error("download() ignores the file name the server sends")
+	}
+}
+
+// TestBackupAnswersWithADownloadName checks the header the page reads, so the
+// saved file keeps its date instead of a path fragment.
+func TestBackupAnswersWithADownloadName(t *testing.T) {
+	server, _ := newTestServer(t)
+	cookie, _ := login(t, server, "admin", "SuperSecret12345")
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/backup", nil)
+	req.AddCookie(cookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	disposition := res.Header.Get("Content-Disposition")
+	if !strings.Contains(disposition, "filename*=UTF-8''") {
+		t.Errorf("the backup sends no escaped file name: %q", disposition)
+	}
+	if !strings.Contains(disposition, "维保备份") && !strings.Contains(disposition, "%E7%BB%B4%E4%BF%9D%E5%A4%87%E4%BB%BD") {
+		t.Errorf("the backup file name is not the one the page shows: %q", disposition)
+	}
+}
