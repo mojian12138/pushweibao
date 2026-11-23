@@ -16,22 +16,31 @@ func TestValidateAcceptsKnownMarkers(t *testing.T) {
 }
 
 func TestValidateRejectsUnknownMarkers(t *testing.T) {
-	// A device marker is not available in a monthly summary.
-	err := Validate(KindMonthly, "项目：{{project}}", false)
+	// A marker nothing knows would reach the phone as a raw "{{name}}",
+	// so it is refused whatever kind the template was written for.
+	err := Validate(KindMonthly, "项目：{{nope}}", false)
 	if err == nil {
 		t.Fatal("expected an unknown marker to be rejected")
 	}
-	if !contains(err.Error(), "project") {
+	if !contains(err.Error(), "nope") {
 		t.Errorf("expected the offending marker in the message, got %v", err)
 	}
 }
 
-func TestValidateRejectsCrossTypeMarkers(t *testing.T) {
-	if err := Validate(KindMilestone, "{{month}}", false); err == nil {
-		t.Error("expected the monthly marker to be rejected for a device reminder")
+// TestValidateAllowsCrossTypeMarkers checks that a marker of another kind
+// is accepted: a strategy may send any template, and the renderer fills the
+// markers of every kind from the same message data.
+func TestValidateAllowsCrossTypeMarkers(t *testing.T) {
+	if err := Validate(KindMilestone, "{{month}}", false); err != nil {
+		t.Errorf("expected the monthly marker to be accepted for a device reminder, got %v", err)
 	}
-	if err := Validate(KindMonthly, "{{sn}}", false); err == nil {
-		t.Error("expected the device marker to be rejected for a monthly summary")
+	if err := Validate(KindMonthly, "{{sn}}", false); err != nil {
+		t.Errorf("expected the device marker to be accepted for a monthly summary, got %v", err)
+	}
+	// A marker nothing knows is still refused, because it would reach the
+	// phone as a raw "{{name}}".
+	if err := Validate(KindMilestone, "{{nope}}", false); err == nil {
+		t.Error("expected an unknown marker to be rejected")
 	}
 }
 
@@ -102,4 +111,26 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestRenderAnyFillsEveryKindOfMarker checks that a template written for
+// one kind renders inside a message of another kind, so a strategy can
+// send any template without leaving a raw marker behind.
+func TestRenderAnyFillsEveryKindOfMarker(t *testing.T) {
+	d := Device{Project: "项目A", Vendor: "厂商", Model: "型号", SN: "SN-1", End: "2026-12-31", Owner: "李四"}
+	s := Summary{
+		Month:           "2026-11",
+		Count:           2,
+		Items:           "行一",
+		Expired:         "行二",
+		ExpiredCount:    1,
+		UpcomingSection: "区块一",
+		ExpiredSection:  "区块二",
+	}
+	got := RenderAny("{{project}}|{{milestone_items}}|{{month}}|{{count}}|{{items}}|{{expired}}|{{expired_count}}|{{upcoming_section}}|{{expired_section}}",
+		d, 30, "分档列表", s)
+	want := "项目A|分档列表|2026-11|2|行一|行二|1|区块一|区块二"
+	if got != want {
+		t.Fatalf("RenderAny() = %q; want %q", got, want)
+	}
 }

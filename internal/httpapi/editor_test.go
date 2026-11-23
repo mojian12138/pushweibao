@@ -52,18 +52,25 @@ func TestPreviewDeviceRendersRealData(t *testing.T) {
 	}
 }
 
-// TestPreviewStrategyRejectsUnknownMarker checks that a template that uses a
-// marker the kind does not support is reported, instead of going out half
-// empty.
+// TestPreviewStrategyRejectsUnknownMarker checks that a marker nothing can
+// fill is reported, instead of going out half empty. A marker of another
+// kind is fine: a strategy may send any template.
 func TestPreviewStrategyRejectsUnknownMarker(t *testing.T) {
 	server, _ := newTestServer(t)
 	cookie, csrf := login(t, server, "admin", "SuperSecret12345")
 
 	status, out := do(t, server, cookie, csrf, http.MethodPost, "/api/preview/strategy", map[string]any{
-		"kind": "milestone", "content": "到期：{{end}} 数量：{{count}}",
+		"kind": "milestone", "content": "到期：{{end}} 数量：{{nope}}",
 	})
 	if status != 400 {
 		t.Fatalf("status %d, want 400: %v", status, out)
+	}
+	// A marker of another kind is accepted and rendered.
+	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/preview/strategy", map[string]any{
+		"kind": "milestone", "mode": "sample", "content": "到期：{{end}} 数量：{{count}}",
+	})
+	if status != 200 {
+		t.Fatalf("a cross kind marker was refused: %d %v", status, out)
 	}
 }
 

@@ -51,13 +51,21 @@ func TestPushTemplateCRUD(t *testing.T) {
 		t.Fatalf("update status %d: %v", status, out)
 	}
 
-	// A body with a marker the kind does not know is refused.
+	// A body with a marker nothing knows is refused; a marker of another
+	// kind is fine, because a strategy may send any template.
 	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/push-templates", map[string]any{
 		"name": "坏模板", "kind": "cycle", "format": "markdown",
-		"body_template": "{{upcoming_section}}",
+		"body_template": "{{nope}}",
 	})
 	if status != 400 {
 		t.Fatalf("invalid body accepted: %d %v", status, out)
+	}
+	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/push-templates", map[string]any{
+		"name": "跨类型模板", "kind": "cycle", "format": "markdown",
+		"body_template": "{{upcoming_section}}",
+	})
+	if status != 200 {
+		t.Fatalf("a cross kind marker was refused: %d %v", status, out)
 	}
 
 	// A built-in template survives a delete.
@@ -155,5 +163,63 @@ func TestStrategyListWithBoundTemplateDoesNotDeadlock(t *testing.T) {
 	}
 	if found["template"] != "## 提醒\n\n{{milestone_items}}" {
 		t.Errorf("the words of the template were not used: %v", found["template"])
+	}
+}
+
+// TestStrategyKeepsItsTriggerWithAForeignTemplate checks that a strategy
+// may send a template written for another kind and still keep its own
+// trigger: the template supplies the words, the trigger decides when the
+// message goes out.
+func TestStrategyKeepsItsTriggerWithAForeignTemplate(t *testing.T) {
+	server, _ := newTestServerWithDB(t)
+	cookie, csrf := login(t, server, "admin", "SuperSecret12345")
+
+	// A summary template, pointed at by a milestone strategy.
+	status, out := do(t, server, cookie, csrf, http.MethodPost, "/api/push-templates", map[string]any{
+		"name": "汇总样式", "kind": "monthly", "format": "markdown",
+		"title_template": "【汇总】{{month}}",
+		"body_template":  "## 汇总\n\n{{upcoming_section}}\n\n{{expired_section}}",
+		"item_template":  "| {{project}} | {{sn}} | {{days}} 天 |",
+	})
+	if status != 200 {
+		t.Fatalf("create template: %d %v", status, out)
+	}
+	tplID := int64(out["data"].(map[string]any)["id"].(float64))
+
+	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/strategies", map[string]any{
+		"name": "里程碑用汇总模板", "type": "milestone", "enabled": true,
+		"template_id": tplID, "cron_expr": "0 9 * * *", "offsets": []int{90, 60, 30, 7, 0},
+	})
+	if status != 200 {
+		t.Fatalf("create strategy: %d %v", status, out)
+	}
+	created := out["data"].(map[string]any)
+	if created["type"] != "milestone" {
+		t.Errorf("the template overwrote the trigger type: %v", created["type"])
+	}
+	if created["cron_expr"] != "0 9 * * *" {
+		t.Errorf("the trigger schedule was lost: %v", created["cron_expr"])
+	}
+
+	// The list shows the same trigger type and the words of the template.
+	status, out = do(t, server, cookie, csrf, http.MethodGet, "/api/strategies", nil)
+	if status != 200 {
+		t.Fatalf("list: %d %v", status, out)
+	}
+	var found map[string]any
+	for _, item := range out["data"].([]any) {
+		x := item.(map[string]any)
+		if x["name"] == "里程碑用汇总模板" {
+			found = x
+		}
+	}
+	if found == nil {
+		t.Fatal("the strategy is missing from the list")
+	}
+	if found["type"] != "milestone" {
+		t.Errorf("the list changed the trigger type to %v", found["type"])
+	}
+	if found["template_name"] != "汇总样式" {
+		t.Errorf("the template is not shown: %v", found["template_name"])
 	}
 }

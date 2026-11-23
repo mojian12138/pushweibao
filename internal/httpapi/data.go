@@ -480,7 +480,7 @@ func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
 	// connection while the outer rows still hold the only one, and the
 	// whole server would wait on itself.
 	rows, e := s.db.Query(`SELECT s.id,s.name,s.type,s.enabled,s.sort_order,s.offsets,s.monthly_day,s.horizon_days,s.cycle_threshold,s.cycle_interval,s.template,s.title_template,s.item_template,s.recipients,COALESCE(s.token_id,0),s.format,COALESCE(s.cron_expr,''),COALESCE(s.template_id,0),
-		COALESCE(t.name,''),COALESCE(t.kind,''),COALESCE(t.format,''),COALESCE(t.title_template,''),COALESCE(t.body_template,''),COALESCE(t.item_template,'')
+		COALESCE(t.name,''),COALESCE(t.format,''),COALESCE(t.title_template,''),COALESCE(t.body_template,''),COALESCE(t.item_template,'')
 		FROM strategies s LEFT JOIN push_templates t ON t.id=s.template_id ORDER BY s.sort_order,s.id`)
 	if e != nil {
 		errorResponse(w, e)
@@ -492,9 +492,9 @@ func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
 		var x Strategy
 		var enabled int
 		var offsets, recipients string
-		var tName, tKind, tFormat, tTitle, tBody, tItem string
+		var tName, tFormat, tTitle, tBody, tItem string
 		if e = rows.Scan(&x.ID, &x.Name, &x.Type, &enabled, &x.Sort, &offsets, &x.MonthlyDay, &x.Horizon, &x.CycleThreshold, &x.CycleInterval, &x.Template, &x.TitleTemplate, &x.ItemTemplate, &recipients, &x.TokenID, &x.Format, &x.CronExpr, &x.TemplateID,
-			&tName, &tKind, &tFormat, &tTitle, &tBody, &tItem); e != nil {
+			&tName, &tFormat, &tTitle, &tBody, &tItem); e != nil {
 			errorResponse(w, e)
 			return
 		}
@@ -503,10 +503,10 @@ func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {
 		}
 		// A strategy that points at a living template sends the words of
 		// that template, so the list shows them and the preview renders
-		// them.
+		// them. The trigger type stays the one of the strategy: a template
+		// written for another kind is allowed, and only its words travel.
 		if x.TemplateID > 0 && tName != "" {
 			x.TemplateName = tName
-			x.Type = tKind
 			x.Format = template.NormalizeFormat(tFormat)
 			x.TitleTemplate = tTitle
 			x.Template = tBody
@@ -532,15 +532,17 @@ func (s *Server) saveStrategy(w http.ResponseWriter, r *http.Request, id int64, 
 		return
 	}
 	// A strategy that points at a template sends the words of that
-	// template, so the words are copied from it and the request does not
-	// carry any of them.
+	// template. The template may have been written for another kind: the
+	// trigger of the strategy is what decides when the message goes out,
+	// and the renderer fills whatever markers the template asks for. The
+	// kind of the template therefore does not overwrite the type of the
+	// strategy.
 	if x.TemplateID > 0 {
-		var kind, format, title, body, item string
-		if e := s.db.QueryRow(`SELECT kind,format,title_template,body_template,item_template FROM push_templates WHERE id=?`, x.TemplateID).Scan(&kind, &format, &title, &body, &item); e != nil {
+		var format, title, body, item string
+		if e := s.db.QueryRow(`SELECT format,title_template,body_template,item_template FROM push_templates WHERE id=?`, x.TemplateID).Scan(&format, &title, &body, &item); e != nil {
 			fail(w, 400, "VALIDATION", "所选模板不存在")
 			return
 		}
-		x.Type = kind
 		x.Format = format
 		x.TitleTemplate = title
 		x.Template = body

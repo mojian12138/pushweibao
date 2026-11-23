@@ -180,10 +180,48 @@ func Unknown(kind, text string, forTitle bool) []string {
 	return out
 }
 
+// AllMarkers lists every marker the renderer can fill, whatever kind a
+// template was written for. A strategy may send any template, so a marker
+// of another kind is not an error as long as the renderer knows it.
+func AllMarkers() []Placeholder {
+	out := []Placeholder{}
+	seen := map[string]bool{}
+	for _, set := range [][]Placeholder{deviceMarkers, milestoneMarkers, summaryMarkers, titleMarkers} {
+		for _, p := range set {
+			if seen[p.Key] {
+				continue
+			}
+			seen[p.Key] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// KnownAnywhere reports whether the renderer can fill a marker at all.
+func KnownAnywhere(key string) bool {
+	for _, p := range AllMarkers() {
+		if p.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // Validate checks a template and returns a readable message when it cannot
 // be used. An empty template is accepted: the caller falls back to a default.
+//
+// A strategy may point at a template written for another kind, so a marker
+// of another kind is accepted as long as the renderer can fill it; only a
+// marker nothing knows is refused, because that one would reach the phone
+// as a raw "{{name}}".
 func Validate(kind, text string, forTitle bool) error {
-	unknown := Unknown(kind, text, forTitle)
+	unknown := []string{}
+	for _, key := range Unknown(kind, text, forTitle) {
+		if !KnownAnywhere(key) {
+			unknown = append(unknown, key)
+		}
+	}
 	if len(unknown) == 0 {
 		return nil
 	}
@@ -233,6 +271,44 @@ func RenderMilestone(text, items string, d Device, days int) string {
 		"owner":           d.Owner,
 		"device":          strings.TrimSpace(d.Vendor + " " + d.Model),
 		"milestone_items": items,
+	}
+	return replace(text, values)
+}
+
+// RenderAny renders a template whatever kind it was written for. A
+// strategy may point at any template, so the markers of a single device,
+// of the grouped window list and of the summary are all filled from the
+// same data: whatever the template asks for comes out filled instead of
+// reaching the phone as a raw marker.
+//
+// A marker the message has no data for is filled with an empty text, so a
+// summary marker inside a single-device message leaves a blank spot rather
+// than "{{items}}".
+func RenderAny(text string, d Device, days int, items string, s Summary) string {
+	values := map[string]string{
+		// The markers of a single device.
+		"project":  d.Project,
+		"customer": d.Customer,
+		"contact":  d.Contact,
+		"vendor":   d.Vendor,
+		"model":    d.Model,
+		"sn":       d.SN,
+		"start":    d.Start,
+		"end":      d.End,
+		"days":     fmt.Sprint(days),
+		"notes":    d.Notes,
+		"owner":    d.Owner,
+		"device":   strings.TrimSpace(d.Vendor + " " + d.Model),
+		// The grouped list of a window message.
+		"milestone_items": items,
+		// The markers of a summary.
+		"month":            s.Month,
+		"count":            fmt.Sprint(s.Count),
+		"items":            s.Items,
+		"expired":          s.Expired,
+		"expired_count":    fmt.Sprint(s.ExpiredCount),
+		"upcoming_section": s.UpcomingSection,
+		"expired_section":  s.ExpiredSection,
 	}
 	return replace(text, values)
 }

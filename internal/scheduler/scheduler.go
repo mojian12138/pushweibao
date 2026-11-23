@@ -235,7 +235,30 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 					}
 					trigger = strings.Join(triggerLabels, "、")
 				}
-				msg := template.RenderMilestone(x.Template, items, rep.Device, rep.Days)
+				// The strategy may point at a template written for any
+				// kind, so the renderer fills the device markers, the
+				// grouped list and the summary blocks together. The blocks
+				// of a summary are laid out from the same window devices,
+				// so a summary template chosen for a window trigger still
+				// shows its list.
+				rows := make([]template.SummaryRow, 0, len(windowHits))
+				for _, h := range windowHits {
+					rows = append(rows, template.SummaryRow{Device: h.Device, Days: h.Days})
+				}
+				upSection, exSection := template.BuildSummaryBlocks(x.Format, x.ItemTemplate, rows)
+				upLines, exLines := template.BuildSummaryLines(x.ItemTemplate, rows)
+				windowSummary := template.Summary{
+					Month:           now.Format("2006-01"),
+					Count:           len(rows) - expiredCountOf(rows),
+					Items:           upLines,
+					Expired:         exLines,
+					ExpiredCount:    expiredCountOf(rows),
+					UpcomingSection: upSection,
+					ExpiredSection:  exSection,
+					Device:          rep.Device,
+					Days:            rep.Days,
+				}
+				msg := template.RenderAny(x.Template, rep.Device, rep.Days, items, windowSummary)
 				title := renderMilestoneTitle(x.TitleTemplate, rep.Device, rep.Days, len(windowHits))
 				for _, tg := range targets {
 					key := fmt.Sprintf("mw:%d:%s:%s", x.ID, fireKey, tg.Recipient)
@@ -364,7 +387,15 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 					Device:          first.Device,
 					Days:            first.Days,
 				}
-				msg := template.RenderSummary(x.Template, summary)
+				// A summary trigger may also carry a template written for
+				// another kind, so every marker the renderer knows is
+				// filled: the grouped list comes from the same devices.
+				hits := make([]template.MilestoneHit, 0, len(rows))
+				for _, r := range rows {
+					hits = append(hits, template.MilestoneHit{Device: r.Device, Days: r.Days})
+				}
+				items := template.BuildMilestoneItems(x.Format, []int{90, 60, 30, 7, 0}, hits)
+				msg := template.RenderAny(x.Template, first.Device, first.Days, items, summary)
 				title := template.RenderTitleSummary(x.TitleTemplate, summary)
 				key := fmt.Sprintf("month:%d:%s:%s", x.ID, fireKey, tg.Recipient)
 				if err = s.enqueue(ctx, key, device{}, x.Name, "定时汇总", tg, title, msg, x.Format); err != nil {

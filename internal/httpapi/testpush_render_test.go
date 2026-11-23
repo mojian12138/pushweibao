@@ -271,9 +271,18 @@ func TestPreviewDeviceRejectsMarkers(t *testing.T) {
 	})
 	deviceID := int64(out["data"].(map[string]any)["id"].(float64))
 
-	// "count" belongs to the monthly summary, not to a single device.
+	// "count" belongs to the summary, but a device preview may still carry
+	// it: a strategy can send any template, so the marker is filled rather
+	// than refused.
 	status, out := do(t, server, cookie, csrf, http.MethodPost, "/api/preview/device/"+itoa(deviceID), map[string]any{
 		"mode": "real", "title": "", "content": "数量：{{count}}",
+	})
+	if status != 200 {
+		t.Fatalf("status %d, want 200: %v", status, out)
+	}
+	// A marker nothing can fill is still refused.
+	status, out = do(t, server, cookie, csrf, http.MethodPost, "/api/preview/device/"+itoa(deviceID), map[string]any{
+		"mode": "real", "title": "", "content": "数量：{{nope}}",
 	})
 	if status != 400 {
 		t.Fatalf("status %d, want 400: %v", status, out)

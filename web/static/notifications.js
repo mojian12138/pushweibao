@@ -196,7 +196,16 @@ function initialTriggerMode(x){
 async function strategyEditorModal(x={}){
   const [templates,tokens]=await Promise.all([(await api('/push-templates')).data,(await api('/push-tokens')).data]);
   const type=x.type||'milestone';
-  const fit=templates.filter(t=>t.kind===type);
+  // Every template can be sent by every strategy: the trigger decides when
+  // the message goes out, the template decides the words. The list is
+  // grouped by the kind a template was written for, so the choice stays
+  // readable without hiding anything.
+  const kindLabel=k=>k==='milestone'?'到期提醒':k==='monthly'?'汇总提醒':'周期循环';
+  const templateGroups=['milestone','monthly','cycle'].map(k=>({
+    label:kindLabel(k),
+    items:templates.filter(t=>t.kind===k),
+  })).filter(g=>g.items.length);
+  const templateOptions=templateGroups.map(g=>`<optgroup label="${g.label}">${g.items.map(t=>`<option value="${t.id}" ${Number(x.template_id||0)===Number(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}</optgroup>`).join('');
   const mode0=initialTriggerMode(x);
   const parsed=parseCronToUI((x.cron_expr||'').trim());
   const offsets0=(x.offsets&&x.offsets.length)?x.offsets.join(','):'90,60,30,7,0';
@@ -236,7 +245,7 @@ async function strategyEditorModal(x={}){
         </div>
         <p class="muted trigger-hint"></p>
       </div>
-      <label>推什么内容<select name="template_id">${fit.map(t=>`<option value="${t.id}" ${Number(x.template_id||0)===Number(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label>
+      <label>推什么内容<select name="template_id">${templateOptions}</select><span class="muted">所有模板都可选；触发方式决定什么时候发，模板决定发什么内容。</span></label>
       <div class="template-preview-box"><p class="muted">正在生成示例…</p></div>
       <details class="span-2 more-options">
         <summary>更多选项（启用状态、接收人、推送渠道、汇总范围）</summary>
@@ -293,13 +302,15 @@ async function strategyEditorModal(x={}){
   refreshTrigger();
 
   // The preview renders the template the strategy points at, with the
-  // sample data, so the user sees the message before saving.
+  // sample data, so the user sees the message before saving. The preview
+  // uses the trigger type of the strategy, so a template written for
+  // another kind is shown the way this strategy will send it.
   const refreshPreview=async()=>{
     const t=templates.find(t=>t.id===Number(form.elements.template_id.value||0));
-    if(!t){box.innerHTML='<p class="muted">该类型暂无模板</p>';return;}
+    if(!t){box.innerHTML='<p class="muted">暂无模板，请先在“推送模板”里新增一份</p>';return;}
     box.innerHTML='<p class="muted">正在生成示例…</p>';
     try{
-      const r=await api('/preview/strategy',{method:'POST',body:JSON.stringify({kind:t.kind,mode:'sample',title:t.title_template,content:t.body_template,item:t.item_template,format:t.format})});
+      const r=await api('/preview/strategy',{method:'POST',body:JSON.stringify({kind:type,mode:'sample',title:t.title_template,content:t.body_template,item:t.item_template,format:t.format})});
       const d=r.data;
       box.innerHTML=(d.title?`<div class="preview-title">${esc(d.title)}</div>`:'')+`<div class="preview-content preview-html">${d.html||esc(d.content||'')}</div>`;
     }catch(e){
@@ -332,7 +343,9 @@ async function strategyEditorModal(x={}){
     }
     const v={
       name:form.elements.name.value,
-      type:t?t.kind:type,
+      // The trigger type stays the one of the strategy: the chosen
+      // template only supplies the words, whatever kind it was written for.
+      type:type,
       enabled:form.elements.enabled.value==='true',
       template_id:Number(form.elements.template_id.value||0),
       cron_expr:cronExpr,
