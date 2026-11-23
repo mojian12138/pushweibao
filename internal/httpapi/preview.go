@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"maintenance-reminder/internal/template"
@@ -103,24 +104,25 @@ func (s *Server) previewStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if out.Mode == "sample" {
-		out.Content = template.Sample(kind, req.Content)
+		// The sample fills every marker the renderer knows, so a template
+		// written for another kind still shows a filled message instead of
+		// its raw markers.
 		out.Title = template.SampleTitle(req.Title)
+		out.Content = template.RenderAny(req.Content, template.SampleDevice(), 30,
+			template.SampleMilestoneItems(out.Format),
+			sampleSummary(out.Format, req.Item, s.currentMonth()))
 		if req.Item != "" {
 			out.Item = template.SampleItem(req.Item)
-		}
-		// The grouped list is laid out with the sample device in the format
-		// of the message, so that the preview shows the layout the phone
-		// will show.
-		if kind == template.KindMilestone {
-			content := template.SampleWithout(kind, req.Content, "milestone_items")
-			out.Content = template.RenderMilestone(content, template.SampleMilestoneItems(out.Format), template.SampleDevice(), 30)
 		}
 		respondPreview(w, out)
 		return
 	}
 
-	// The real mode renders with a record from the database.
-	if kind == template.KindMonthly {
+	// The real mode renders with the records of the database. What the
+	// template asks for decides which records: a body that asks for a
+	// summary shows the devices of the horizon, a body that asks for a list
+	// shows the devices of the window, and the rest shows one device.
+	if template.AsksForSummary(req.Content) {
 		// The summary covers the horizon of the strategy, so the preview
 		// filters the devices the same way the monthly scan does. A
 		// preview request that does not name a horizon uses 90 days, the
@@ -129,13 +131,21 @@ func (s *Server) previewStrategy(w http.ResponseWriter, r *http.Request) {
 		if horizon <= 0 {
 			horizon = 90
 		}
-		summary, err := s.buildPreviewSummary(r, req.Item, out.Format, horizon)
+		summary, rows, err := s.buildPreviewSummary(r, req.Item, out.Format, horizon)
 		if err != nil {
 			fail(w, 500, "INTERNAL", err.Error())
 			return
 		}
-		out.Content = template.RenderSummary(req.Content, summary)
+		// A summary template may also hold the grouped list, so the list is
+		// laid out from the same rows instead of being left as a marker.
+		hits := make([]template.MilestoneHit, 0, len(rows))
+		for _, row := range rows {
+			hits = append(hits, template.MilestoneHit{Device: row.Device, Days: row.Days})
+		}
+		items := template.BuildMilestoneItems(out.Format, template.DefaultOffsets, hits)
+		out.Content = template.RenderAny(req.Content, summary.Device, summary.Days, items, summary)
 		out.Title = template.RenderTitleSummary(req.Title, summary)
+		out.WindowCount = summary.Count + summary.ExpiredCount
 		if req.Item != "" {
 			out.Item = template.RenderItem(req.Item, summary.Device, summary.Days)
 		}
@@ -154,18 +164,48 @@ func (s *Server) previewStrategy(w http.ResponseWriter, r *http.Request) {
 	// the preview shows the message the strategy will really send. A
 	// request that carries a device id previews that one device, as the
 	// test dialog of a device does.
-	if kind == template.KindMilestone && template.KnownMarker(req.Content, "milestone_items") {
-		items, repDevice, repDays, count := s.buildMilestoneWindowFor(r, req, out.Format)
-		out.Content = template.RenderMilestone(req.Content, items, repDevice, repDays)
+	if template.KnownMarker(req.Content, "milestone_items") {
+		items, repDevice, repDays, count, rows := s.buildMilestoneWindowFor(r, req, out.Format)
+		out.Content = template.RenderAny(req.Content, repDevice, repDays, items, s.summaryOfRows(req.Item, out.Format, rows, repDevice, repDays))
+		out.Title = template.RenderTitleSummary(req.Title, s.summaryOfRows(req.Item, out.Format, rows, repDevice, repDays))
 		out.WindowCount = count
 	} else {
-		out.Content = template.Render(req.Content, d, days)
+		summary := s.summaryOfRows(req.Item, out.Format, []template.SummaryRow{{Device: d, Days: days}}, d, days)
+		out.Content = template.RenderAny(req.Content, d, days, template.MilestoneItemsForOne(out.Format, d, days), summary)
+		out.Title = template.RenderTitleSummary(req.Title, summary)
 	}
-	out.Title = template.RenderTitle(req.Title, d, days)
 	if req.Item != "" {
 		out.Item = template.RenderItem(req.Item, d, days)
 	}
 	respondPreview(w, out)
+}
+
+// summaryOfRows lays out the summary of the rows a preview covers, so that a
+// template that asks for a summary is filled from the same devices the list
+// shows.
+func (s *Server) summaryOfRows(itemTemplate, format string, rows []template.SummaryRow, device template.Device, days int) template.Summary {
+	if strings.TrimSpace(itemTemplate) == "" {
+		itemTemplate = template.DefaultItemFor(format)
+	}
+	upcomingSection, expiredSection := template.BuildSummaryBlocks(format, itemTemplate, rows)
+	upcomingLines, expiredLines := template.BuildSummaryLines(itemTemplate, rows)
+	summary := template.Summary{
+		Month:           s.currentMonth(),
+		Items:           upcomingLines,
+		Expired:         expiredLines,
+		UpcomingSection: upcomingSection,
+		ExpiredSection:  expiredSection,
+		Device:          device,
+		Days:            days,
+	}
+	for _, row := range rows {
+		if row.Days < 0 {
+			summary.ExpiredCount++
+		} else {
+			summary.Count++
+		}
+	}
+	return summary
 }
 
 // respondPreview sends a rendered preview.
@@ -213,13 +253,12 @@ func (s *Server) previewDevice(w http.ResponseWriter, r *http.Request) {
 		UsedDeviceID:      id,
 		Format:            template.NormalizeFormat(req.Format),
 	}
+	// Every marker is filled, so a template written for another kind never
+	// reaches the phone as raw text through the test of a single device.
+	summary := s.summaryOfRows(req.Item, out.Format, []template.SummaryRow{{Device: d, Days: days}}, d, days)
+	out.Content = template.RenderAny(req.Content, d, days, template.MilestoneItemsForOne(out.Format, d, days), summary)
 	if req.Title != "" {
-		out.Title = template.RenderTitle(req.Title, d, days)
-	}
-	if template.KnownMarker(req.Content, "milestone_items") {
-		out.Content = template.RenderMilestone(req.Content, template.MilestoneItemsForOne(out.Format, d, days), d, days)
-	} else {
-		out.Content = template.Render(req.Content, d, days)
+		out.Title = template.RenderTitleSummary(req.Title, summary)
 	}
 	if req.Item != "" {
 		out.Item = template.RenderItem(req.Item, d, days)
@@ -255,13 +294,10 @@ func (s *Server) previewToken(w http.ResponseWriter, r *http.Request) {
 		out.Mode = "sample"
 	}
 	if out.Mode == "sample" {
-		content := template.SampleWithout(template.KindMilestone, req.Content, "milestone_items")
 		out.Title = template.SampleTitle(req.Title)
-		if template.KnownMarker(content, "milestone_items") {
-			out.Content = template.RenderMilestone(content, template.SampleMilestoneItems(out.Format), template.SampleDevice(), 30)
-		} else {
-			out.Content = template.Sample(template.KindMilestone, req.Content)
-		}
+		out.Content = template.RenderAny(req.Content, template.SampleDevice(), 30,
+			template.SampleMilestoneItems(out.Format),
+			sampleSummary(out.Format, req.Item, s.currentMonth()))
 		respondPreview(w, out)
 		return
 	}
@@ -271,12 +307,10 @@ func (s *Server) previewToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.UsedDeviceID = id
-	out.Content = template.Render(req.Content, d, days)
-	if template.KnownMarker(req.Content, "milestone_items") {
-		out.Content = template.RenderMilestone(req.Content, template.MilestoneItemsForOne(out.Format, d, days), d, days)
-	}
+	summary := s.summaryOfRows(req.Item, out.Format, []template.SummaryRow{{Device: d, Days: days}}, d, days)
+	out.Content = template.RenderAny(req.Content, d, days, template.MilestoneItemsForOne(out.Format, d, days), summary)
 	if req.Title != "" {
-		out.Title = template.RenderTitle(req.Title, d, days)
+		out.Title = template.RenderTitleSummary(req.Title, summary)
 	}
 	respondPreview(w, out)
 }
@@ -311,7 +345,7 @@ func (s *Server) loadPreviewDevice(r *http.Request, id int64) (template.Device, 
 // list, grouped and sorted by urgency. A request that names a device
 // previews that device alone. The representative device is the most urgent
 // one of the window, so the markers of a single device name it.
-func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays int, offsets []int) (string, template.Device, int, int) {
+func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays int, offsets []int) (string, template.Device, int, int, []template.SummaryRow) {
 	if len(offsets) == 0 {
 		offsets = template.DefaultOffsets
 	}
@@ -326,10 +360,11 @@ func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays 
 	rows, e := s.db.Query(`SELECT d.id,p.name,p.customer,COALESCE(p.contact,''),d.vendor,d.model,d.serial_number,d.maintenance_start,d.maintenance_end,d.notes,COALESCE(NULLIF(d.owner,''),p.owner)
 		FROM devices d JOIN projects p ON p.id=d.project_id WHERE d.status='active' ORDER BY d.maintenance_end LIMIT 500`)
 	if e != nil {
-		return "", template.Device{}, 0, 0
+		return "", template.Device{}, 0, 0, nil
 	}
 	defer rows.Close()
 	hits := []template.MilestoneHit{}
+	windowRows := []template.SummaryRow{}
 	for rows.Next() {
 		var d template.Device
 		var id int64
@@ -346,14 +381,16 @@ func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays 
 			continue
 		}
 		hits = append(hits, template.MilestoneHit{Device: d, ID: id, Days: days})
+		windowRows = append(windowRows, template.SummaryRow{Device: d, Days: days})
 	}
 	if len(hits) == 0 {
 		// A window without devices falls back to the closest device, so
 		// the preview still shows the layout of the message.
 		if d, days, _, err := s.loadPreviewDevice(rDummy(), 0); err == nil {
-			return template.BuildMilestoneItems(format, offsets, []template.MilestoneHit{{Device: d, Days: days}}), d, days, 0
+			one := []template.SummaryRow{{Device: d, Days: days}}
+			return template.BuildMilestoneItems(format, offsets, []template.MilestoneHit{{Device: d, Days: days}}), d, days, 0, one
 		}
-		return "", template.Device{}, 0, 0
+		return "", template.Device{}, 0, 0, nil
 	}
 	rep := hits[0]
 	for _, h := range hits[1:] {
@@ -361,7 +398,7 @@ func (s *Server) buildMilestoneWindow(format string, deviceID int64, windowDays 
 			rep = h
 		}
 	}
-	return template.BuildMilestoneItems(format, offsets, hits), rep.Device, rep.Days, len(hits)
+	return template.BuildMilestoneItems(format, offsets, hits), rep.Device, rep.Days, len(hits), windowRows
 }
 
 // rDummy is the request the fallback of the window builder hands on, so
@@ -370,10 +407,10 @@ func rDummy() *http.Request { return nil }
 
 // buildMilestoneWindowFor lays the devices of the window out for a preview
 // request, with the tiers the request carries.
-func (s *Server) buildMilestoneWindowFor(r *http.Request, req previewRequest, format string) (string, template.Device, int, int) {
+func (s *Server) buildMilestoneWindowFor(r *http.Request, req previewRequest, format string) (string, template.Device, int, int, []template.SummaryRow) {
 	return s.buildMilestoneWindow(format, req.DeviceID, req.Window, req.Offsets)
 }
-func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format string, horizon int) (template.Summary, error) {
+func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format string, horizon int) (template.Summary, []template.SummaryRow, error) {
 	if itemTemplate == "" {
 		itemTemplate = DefaultItemTemplate
 	}
@@ -383,7 +420,7 @@ func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format strin
 		WHERE d.status='active' AND (d.maintenance_end<date(?) OR d.maintenance_end<=date(?, '+' || ? || ' day'))
 		ORDER BY d.maintenance_end LIMIT 50`, s.today(), s.today(), horizon)
 	if e != nil {
-		return out, e
+		return out, nil, e
 	}
 	defer rows.Close()
 	var summaryRows []template.SummaryRow
@@ -391,7 +428,7 @@ func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format strin
 		var d template.Device
 		var end string
 		if e = rows.Scan(&d.Project, &d.Customer, &d.Contact, &d.Vendor, &d.Model, &d.SN, &end, &d.Notes, &d.Owner); e != nil {
-			return out, e
+			return out, nil, e
 		}
 		d.End = end
 		days := s.daysUntil(end)
@@ -413,7 +450,7 @@ func (s *Server) buildPreviewSummary(r *http.Request, itemTemplate, format strin
 			out.Count++
 		}
 	}
-	return out, nil
+	return out, summaryRows, nil
 }
 
 // daysUntil returns the number of days between today and the end date. A

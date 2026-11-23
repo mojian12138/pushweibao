@@ -443,33 +443,50 @@ type Strategy struct {
 // strategySampleBody renders the body of a strategy with the sample data, so
 // that the list can show the message the way it will look instead of the
 // template source.
+//
+// What the template asks for decides the layout, because a strategy may point
+// at a template written for another kind. A body that asks for a summary is
+// laid out as a summary even when the strategy carries a milestone trigger,
+// which is the whole point of the templates being shared.
 func strategySampleBody(s *Server, x Strategy) string {
-	// The grouped list of a milestone message is laid out in the format of
-	// the strategy, so the preview matches the layout of the phone.
-	if x.Type == template.KindMilestone {
-		content := template.SampleWithout(x.Type, x.Template, "milestone_items")
-		return template.RenderMilestone(content, template.SampleMilestoneItems(x.Format), template.SampleDevice(), 30)
+	device := template.SampleDevice()
+	items := template.SampleMilestoneItems(x.Format)
+	if template.AsksForSummary(x.Template) {
+		return template.RenderAny(x.Template, device, 30, items, sampleSummary(x.Format, x.ItemTemplate, s.currentMonth()))
 	}
-	body := template.Sample(x.Type, x.Template)
-	if x.Type != template.KindMonthly {
-		return body
+	if template.KnownMarker(x.Template, "milestone_items") {
+		return template.RenderAny(x.Template, device, 30, items, template.Summary{Device: device, Days: 30, Count: 1})
 	}
-	// The summary is built around the lines of the item template, so both
-	// have to be rendered for the table to be filled.
-	item := x.ItemTemplate
-	if strings.TrimSpace(item) == "" {
-		item = template.DefaultItemFor(x.Format)
+	return template.RenderAny(x.Template, device, 30, "", template.Summary{})
+}
+
+// sampleSummary lays out the summary a preview shows: two devices about to
+// expire and one already overdue, so that both blocks are visible.
+func sampleSummary(format, itemTemplate, month string) template.Summary {
+	if strings.TrimSpace(itemTemplate) == "" {
+		itemTemplate = template.DefaultItemFor(format)
 	}
-	line := template.SampleItem(item) + "\n"
-	summary := template.Summary{
-		Month: s.currentMonth(),
-		Count: 2,
-		Items: line + line,
+	device := template.SampleDevice()
+	overdue := device
+	overdue.End = "2026-10-01"
+	rows := []template.SummaryRow{
+		{Device: device, Days: 30},
+		{Device: device, Days: 7},
+		{Device: overdue, Days: -5},
 	}
-	// The section markers are filled with the sample blocks of the format,
-	// so that a list preview of a summary shows the layout of the message.
-	summary.UpcomingSection, summary.ExpiredSection = template.SampleSummarySections(x.Format, item)
-	return template.RenderSummary(x.Template, summary)
+	upcomingSection, expiredSection := template.BuildSummaryBlocks(format, itemTemplate, rows)
+	upcomingLines, expiredLines := template.BuildSummaryLines(itemTemplate, rows)
+	return template.Summary{
+		Month:           month,
+		Count:           2,
+		Items:           upcomingLines,
+		Expired:         expiredLines,
+		ExpiredCount:    1,
+		UpcomingSection: upcomingSection,
+		ExpiredSection:  expiredSection,
+		Device:          device,
+		Days:            30,
+	}
 }
 
 func (s *Server) listStrategies(w http.ResponseWriter, r *http.Request) {

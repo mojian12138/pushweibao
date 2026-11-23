@@ -400,6 +400,32 @@ func KnownMarker(text, key string) bool {
 	return false
 }
 
+// summaryMarkerKeys are the markers only a summary of many devices fills.
+// They are what makes a body a summary body, whatever kind the strategy that
+// points at it declares.
+var summaryMarkerKeys = []string{"month", "count", "items", "expired", "expired_count", "upcoming_section", "expired_section"}
+
+// AsksForSummary reports whether a body uses a marker that only a summary of
+// many devices fills. A strategy may point at a template written for another
+// kind, so the template decides how the message is laid out, not the kind of
+// the strategy: a body that asks for a summary is a summary.
+func AsksForSummary(text string) bool {
+	for _, key := range summaryMarkerKeys {
+		if KnownMarker(text, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// AsksForList reports whether a body asks for more than one device, either as
+// the grouped list of a window or as the blocks of a summary. It is the test
+// that keeps a summary template out of the single-device renderer, which does
+// not know its markers and would leave them in the message.
+func AsksForList(text string) bool {
+	return KnownMarker(text, "milestone_items") || AsksForSummary(text)
+}
+
 // replace swaps every known marker. Unknown markers are left untouched so
 // that a validation mistake stays visible in the preview.
 func replace(text string, values map[string]string) string {

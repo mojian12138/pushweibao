@@ -42,6 +42,18 @@ type Scheduler struct {
 	Push   *push.Client
 	// Log records what the scheduler does, so that the log page can show it.
 	Log *systemlog.Logger
+	// Now returns the current time. A nil value uses the wall clock; a test
+	// sets it to drive a scan to a known minute, which a cron schedule
+	// needs to fire at all.
+	Now func() time.Time
+}
+
+// clock returns the current time, so that the scan can be driven by a test.
+func (s *Scheduler) clock() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 type device struct {
@@ -109,8 +121,10 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().In(loc)
+	now := s.clock().In(loc)
 	today := now.Format("2006-01-02")
+	// The month goes into the titles and the summaries alike.
+	month := now.Format("2006-01")
 	var previousScan string
 	_ = s.DB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='scheduler.last_scan_date'`).Scan(&previousScan)
 	devices, err := s.devices(ctx)
@@ -167,13 +181,13 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 			// templates keep the behaviour of the first release: a device
 			// that reaches one of the offsets is reminded on that day, and
 			// a scan that missed a day catches up without repeating.
-			grouped := false
-			for _, key := range template.Markers(x.Template) {
-				if key == "milestone_items" {
-					grouped = true
-					break
-				}
-			}
+			// The template decides the layout, not the kind of the
+			// strategy: a body that asks for a list or a summary is laid
+			// out over the devices of the window, whatever kind the
+			// strategy carries. Otherwise a summary template chosen for a
+			// milestone trigger would be rendered device by device and its
+			// markers would reach the phone as raw text.
+			grouped := template.AsksForList(x.Template)
 			if grouped {
 				// The window message fires on the cron schedule when the
 				// strategy carries one, or on the first scan of the day
@@ -200,13 +214,22 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 						widest = o
 					}
 				}
+				// A summary asks about the devices that are already overdue
+				// as well, so the window carries them; a reminder of a
+				// coming date stays inside the tiers, because an expired
+				// device is not a reminder of a date ahead.
+				withExpired := template.AsksForSummary(x.Template)
 				windowHits := []template.MilestoneHit{}
 				for _, d := range applicableDevices(x.ID) {
 					days, e := remaining(d.End, today)
 					if e != nil {
 						return e
 					}
-					if days < 0 || days > widest {
+					if days < 0 {
+						if !withExpired {
+							continue
+						}
+					} else if days > widest {
 						continue
 					}
 					windowHits = append(windowHits, template.MilestoneHit{Device: d.asTemplateDevice(), ID: d.ID, Days: days})
@@ -259,7 +282,14 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 					Days:            rep.Days,
 				}
 				msg := template.RenderAny(x.Template, rep.Device, rep.Days, items, windowSummary)
-				title := renderMilestoneTitle(x.TitleTemplate, rep.Device, rep.Days, len(windowHits))
+				// A summary template counts what is still ahead in both
+				// the title and the body, so the two numbers agree. A plain
+				// reminder counts the devices the message lists.
+				titleSummary := windowSummary
+				if !withExpired {
+					titleSummary.Count = len(windowHits)
+				}
+				title := renderTitleSummary(x.TitleTemplate, titleSummary)
 				for _, tg := range targets {
 					key := fmt.Sprintf("mw:%d:%s:%s", x.ID, fireKey, tg.Recipient)
 					if err := s.enqueue(ctx, key, device{ID: rep.ID}, x.Name, trigger, tg, title, msg, x.Format); err != nil {
@@ -298,9 +328,10 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 				}
 			}
 			for _, h := range hits {
+				title, msg := renderOne(x, month, h.d.asTemplateDevice(), h.days)
 				for _, tg := range targets {
 					key := fmt.Sprintf("m:%d:%d:%s:%d:%s", x.ID, h.d.ID, h.d.End, h.offset, tg.Recipient)
-					if err := s.enqueue(ctx, key, h.d, x.Name, fmt.Sprintf("%d 天", h.offset), tg, renderTitle(x.TitleTemplate, h.d, h.days), render(x.Template, h.d, h.days), x.Format); err != nil {
+					if err := s.enqueue(ctx, key, h.d, x.Name, fmt.Sprintf("%d 天", h.offset), tg, title, msg, x.Format); err != nil {
 						return err
 					}
 				}
@@ -318,9 +349,10 @@ func (s *Scheduler) Scan(ctx context.Context) error {
 					continue
 				}
 				bucket := (x.Threshold - days) / x.Interval
+				title, msg := renderOne(x, month, d.asTemplateDevice(), days)
 				for _, tg := range targets {
 					key := fmt.Sprintf("c:%d:%d:%s:%d:%s", x.ID, d.ID, d.End, bucket, tg.Recipient)
-					if e = s.enqueue(ctx, key, d, x.Name, fmt.Sprintf("周期第 %d 次", bucket+1), tg, renderTitle(x.TitleTemplate, d, days), render(x.Template, d, days), x.Format); e != nil {
+					if e = s.enqueue(ctx, key, d, x.Name, fmt.Sprintf("周期第 %d 次", bucket+1), tg, title, msg, x.Format); e != nil {
 						return e
 					}
 				}
@@ -546,28 +578,52 @@ func (d device) asTemplateDevice() template.Device {
 	}
 }
 
-func render(t string, d device, days int) string {
-	return template.Render(t, d.asTemplateDevice(), days)
+// renderOne renders the title and the body of a reminder that names one
+// device. The device markers, the grouped list of that one device and the
+// summary of that one device are all filled, so a template written for
+// another kind never leaves a raw marker in a message about a single device.
+func renderOne(x strategy, month string, d template.Device, days int) (string, string) {
+	summary := summaryOfOne(x.Format, x.ItemTemplate, month, d, days)
+	items := template.MilestoneItemsForOne(x.Format, d, days)
+	title := DefaultTitle
+	if strings.TrimSpace(x.TitleTemplate) != "" {
+		title = template.RenderTitleSummary(x.TitleTemplate, summary)
+	}
+	return title, template.RenderAny(x.Template, d, days, items, summary)
 }
 
-// renderTitle renders the title of a reminder. An empty title template falls
-// back to the default title.
-func renderTitle(t string, d device, days int) string {
+// summaryOfOne lays out the summary of a single device, so that a template
+// written for a summary still comes out filled when the trigger names one
+// device.
+func summaryOfOne(format, itemTemplate, month string, d template.Device, days int) template.Summary {
+	rows := []template.SummaryRow{{Device: d, Days: days}}
+	upcomingSection, expiredSection := template.BuildSummaryBlocks(format, itemTemplate, rows)
+	upcomingLines, expiredLines := template.BuildSummaryLines(itemTemplate, rows)
+	summary := template.Summary{
+		Month:           month,
+		Items:           upcomingLines,
+		Expired:         expiredLines,
+		UpcomingSection: upcomingSection,
+		ExpiredSection:  expiredSection,
+		Device:          d,
+		Days:            days,
+	}
+	if days < 0 {
+		summary.ExpiredCount = 1
+	} else {
+		summary.Count = 1
+	}
+	return summary
+}
+
+// renderTitleSummary renders a title with the markers of a summary and of a
+// single device both filled. An empty title template falls back to the
+// default title.
+func renderTitleSummary(t string, s template.Summary) string {
 	if strings.TrimSpace(t) == "" {
 		return DefaultTitle
 	}
-	return template.RenderTitle(t, template.Device{
-		Project:  d.Project,
-		Customer: d.Customer,
-		Contact:  d.Contact,
-		Vendor:   d.Vendor,
-		Model:    d.Model,
-		SN:       d.SN,
-		Start:    d.Start,
-		End:      d.End,
-		Notes:    d.Notes,
-		Owner:    d.Owner,
-	}, days)
+	return template.RenderTitleSummary(t, s)
 }
 
 // renderItem lays out one line of the monthly summary. An empty item
@@ -613,29 +669,6 @@ func absDays(n int) int {
 // renderMilestoneTitle renders the title of a milestone message. A title
 // may name the number of devices the message covers, so {{count}} is
 // filled with it; the other markers come from the representative device.
-func renderMilestoneTitle(t string, d template.Device, days, count int) string {
-	if strings.TrimSpace(t) == "" {
-		return DefaultTitle
-	}
-	values := map[string]string{
-		"project":  d.Project,
-		"customer": d.Customer,
-		"contact":  d.Contact,
-		"vendor":   d.Vendor,
-		"model":    d.Model,
-		"sn":       d.SN,
-		"start":    d.Start,
-		"end":      d.End,
-		"days":     fmt.Sprint(days),
-		"notes":    d.Notes,
-		"owner":    d.Owner,
-		"device":   strings.TrimSpace(d.Vendor + " " + d.Model),
-		"month":    "",
-		"count":    fmt.Sprint(count),
-	}
-	return template.ReplaceKeys(t, values)
-}
-
 func (s *Scheduler) Deliver(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id,recipient,title,message,COALESCE(token_id,0),attempts,format,strategy_name,trigger_point,project_name,token_name,channel_detail FROM notification_outbox WHERE status IN ('pending','failed') AND next_attempt<=CURRENT_TIMESTAMP AND (attempts < ? OR last_error NOT LIKE '已达到重试上限%') ORDER BY id LIMIT 50`, retryLimitOf(s.pushDefaults(ctx)["retry_limit"]))
 	if err != nil {
