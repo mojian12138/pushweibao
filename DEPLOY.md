@@ -207,12 +207,20 @@ cd /www/wwwroot/weibao
 | :--- | :--- |
 | 名称 | `weibao`（随意，英文） |
 | 运行目录 | `/www/wwwroot/weibao` |
-| 启动命令 | `./maintenance-reminder -config /www/wwwroot/weibao/config.yaml` |
+| 启动命令 | `/www/wwwroot/weibao/maintenance-reminder -config /www/wwwroot/weibao/config.yaml` |
 | 运行用户 | `root`（图省事）；用 `www` 更安全，但要先 `chown -R www:www /www/wwwroot/weibao` |
 | 进程数量 | `1` |
 | 描述 | 维保提醒系统 |
 
 保存后状态应显示「运行中」。插件里可以看实时日志，也可以手动「重启 / 停止」。
+
+> **启动命令必须写绝对路径**。插件里的「运行目录」只决定进程的工作目录，
+> supervisord 查找命令时并不进入那个目录，写 `./maintenance-reminder` 会一直
+> 报 `spawnerr: can't find command './maintenance-reminder'`，然后进程进入
+> FATAL 状态、反复重试。改成 `/www/wwwroot/weibao/maintenance-reminder` 即可。
+>
+> 如果报 `permission denied`，说明文件没有执行权限：
+> `chmod +x /www/wwwroot/weibao/maintenance-reminder`。
 
 ### 5. 开放端口
 
