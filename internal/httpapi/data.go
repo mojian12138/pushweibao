@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1047,48 +1045,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=maintenance-export.csv")
-	wr := csv.NewWriter(w)
-	_ = wr.Write([]string{"project", "customer", "contact", "vendor", "model", "serial_number", "maintenance_start", "maintenance_end", "status", "owner", "contract_no", "notes"})
-	rows, e := s.db.Query(`SELECT p.name,p.customer,p.contact,d.vendor,d.model,d.serial_number,d.maintenance_start,d.maintenance_end,d.status,d.owner,d.contract_no,d.notes FROM devices d JOIN projects p ON p.id=d.project_id ORDER BY p.name,d.serial_number`)
-	if e != nil {
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var a [12]string
-		ptr := make([]any, 12)
-		for i := range a {
-			ptr[i] = &a[i]
-		}
-		if rows.Scan(ptr...) != nil {
-			return
-		}
-		_ = wr.Write(a[:])
-	}
-	wr.Flush()
-}
-func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
-	f, err := os.CreateTemp("", "maintenance-backup-*.db")
-	if err != nil {
-		errorResponse(w, err)
-		return
-	}
-	name := f.Name()
-	_ = f.Close()
-	defer os.Remove(name)
-	if _, err = s.db.Exec(`VACUUM INTO ?`, name); err != nil {
-		errorResponse(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/vnd.sqlite3")
-	w.Header().Set("Content-Disposition", "attachment; filename=maintenance-backup.db")
-	s.auditMutation(r, systemlog.CategorySystem, "database_backup_downloaded", "database", 0, "SQLite VACUUM INTO backup created and downloaded")
-	http.ServeFile(w, r, name)
-}
-
 func (s *Server) auditMutation(r *http.Request, category, action, object string, id int64, detail string) {
 	_ = s.log().Record(systemlog.Entry{
 		Level: systemlog.LevelInfo, Category: category, Action: action,

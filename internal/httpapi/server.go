@@ -118,8 +118,13 @@ func (s *Server) Handler() http.Handler {
 	// A strategy that has not been saved yet can still be tested, so that
 	// the user can check the message before saving it.
 	mux.Handle("POST /api/strategies/test", s.requireAdmin(http.HandlerFunc(s.testDraftStrategyPush)))
-	mux.Handle("GET /api/export.csv", s.requireAdmin(http.HandlerFunc(s.exportCSV)))
-	mux.Handle("GET /api/backup", s.requireAdmin(http.HandlerFunc(s.backup)))
+	// A backup is one file that carries the data the program holds, and the
+	// same file is what a restore reads, so that a copy can be put back
+	// without a tool on the server.
+	mux.Handle("GET /api/backup", s.requireAdmin(http.HandlerFunc(s.exportBackup)))
+	mux.Handle("POST /api/backup/restore", s.requireAdmin(http.HandlerFunc(s.importBackup)))
+	mux.Handle("GET /api/backup/info", s.requireAdmin(http.HandlerFunc(s.backupInfo)))
+	mux.Handle("GET /api/backup/safety/{name}", s.requireAdmin(http.HandlerFunc(s.downloadSafetyBackup)))
 	mux.Handle("GET /", s.static())
 	return securityHeaders(mux)
 }

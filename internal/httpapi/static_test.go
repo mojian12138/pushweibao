@@ -31,7 +31,7 @@ func TestStaticAssetsServeTheCurrentBuild(t *testing.T) {
 
 	// Every one of these belongs to the push token work; if the UI is stale the
 	// page silently falls back to the old single-token form.
-	for _, marker := range []string{"'/push-tokens'", "tokenModal", "push_token_id", "token_masked", "令牌管理"} {
+	for _, marker := range []string{"'/push-tokens'", "tokenModal", "push_token_id", "token_masked", "令牌管理", "dataPanel", "wireDataPanel", "/backup/info"} {
 		if !strings.Contains(js, marker) {
 			t.Errorf("the embedded app.js is missing %q", marker)
 		}
@@ -44,7 +44,7 @@ func TestStaticAssetsServeTheCurrentBuild(t *testing.T) {
 func TestEditorAssetsAreServed(t *testing.T) {
 	server, _ := newTestServer(t)
 
-	for _, name := range []string{"editor.js", "strategy-editor.js", "device-test.js", "token-test.js", "logs.js"} {
+	for _, name := range []string{"editor.js", "strategy-editor.js", "device-test.js", "token-test.js", "logs.js", "data.js"} {
 		res, err := http.Get(server.URL + "/static/" + name)
 		if err != nil {
 			t.Fatalf("fetch %s: %v", name, err)
@@ -69,7 +69,7 @@ func TestEditorAssetsAreServed(t *testing.T) {
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	html := string(body)
-	for _, name := range []string{"editor.js", "strategy-editor.js", "device-test.js", "token-test.js", "logs.js", "app.js"} {
+	for _, name := range []string{"editor.js", "strategy-editor.js", "device-test.js", "token-test.js", "logs.js", "data.js", "app.js"} {
 		if !strings.Contains(html, "/static/"+name) {
 			t.Errorf("index.html does not load %s", name)
 		}

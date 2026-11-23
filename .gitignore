@@ -16,3 +16,6 @@
 .vscode/
 .claude/
 .agent-browser-home/
+
+# 本地构建缓存
+/.gocache/
